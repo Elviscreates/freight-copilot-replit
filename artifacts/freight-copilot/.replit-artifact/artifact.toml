@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Freight Copilot"
+description = "A high-density logistics operations dashboard for reviewing freight loads, matching DAT benchmarks, dispatching approved loads, and managing carrier communications."
+version = "1.0.0"
+id = "artifacts/freight-copilot"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18895
+
+[services.development]
+run = "pnpm --filter @workspace/freight-copilot run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/freight-copilot", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/freight-copilot/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18895"
+BASE_PATH = "/"
