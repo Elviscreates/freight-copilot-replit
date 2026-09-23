@@ -1,6 +1,6 @@
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
@@ -65,9 +65,14 @@ async def send_email(to: str, subject: str, body: str) -> None:
 @app.get("/api/pipelines")
 async def list_pipelines() -> Dict[str, Any]:
     all_pipelines = store.get_all()
+    pipelines = []
+    for p in all_pipelines.values():
+        if isinstance(p, str):
+            p = safe_dict(p)
+        pipelines.append(p)
     return {
-        "pipelines": list(all_pipelines.values()),
-        "count": len(all_pipelines),
+        "pipelines": pipelines,
+        "count": len(pipelines),
     }
 
 
@@ -76,6 +81,8 @@ async def get_pipeline(pipeline_id: str) -> Dict[str, Any]:
     pipeline = store.get(pipeline_id)
     if pipeline is None:
         raise HTTPException(status_code=404, detail="Pipeline not found")
+    if isinstance(pipeline, str):
+        pipeline = safe_dict(pipeline)
     return pipeline
 
 
@@ -98,7 +105,7 @@ async def approve_pipeline(pipeline_id: str, payload: ApprovePayload) -> Dict[st
 
     # Update pipeline status in-memory
     pipeline["status"] = "APPROVED"
-    pipeline["approved_at"] = datetime.utcnow().isoformat()
+    pipeline["approved_at"] = datetime.now(timezone.utc).isoformat()
     store.save(pipeline_id, pipeline)
 
     print(f"[DISPATCH] Pipeline {pipeline_id} approved successfully.")
@@ -107,9 +114,8 @@ async def approve_pipeline(pipeline_id: str, payload: ApprovePayload) -> Dict[st
     await notify_clients({"type": "approved", "pipeline_id": pipeline_id})
 
     return {
-        "status": "success",
-        "message": f"Pipeline {pipeline_id} approved and dispatched.",
-        "pipeline": pipeline
+        "status": "approved",
+        "pipeline_id": pipeline_id
     }
 
 
