@@ -42,6 +42,7 @@ type DraftChannel = 'shipper' | 'carrier';
 
 type Load = {
   id: string;
+  pipeline_id?: string;
   origin: string;
   destination: string;
   originState: string;
@@ -59,11 +60,35 @@ type Load = {
   delivery: string;
   received: string;
   status: LoadStatus;
-  carriers: { name: string; score: number; equipment: string; phone: string; email?: string }[];
+  carriers: { name: string; score: number; equipment: string; phone: string; email?: string; rate?: number; mc_number?: string }[];
+  matched_carriers?: { name: string; rate?: number; score: number; equipment: string; phone?: string; email?: string; mc_number?: string }[];
   review_summary?: {
     shipper_email?: string;
     carrier_contacts?: Array<{ email?: string; name?: string }>;
   };
+  review_package?: {
+    drafts?: {
+      shipper_email?: { body: string };
+      carrier_outreach?: { body: string };
+    };
+    matched_carriers?: { name: string; rate?: number; score: number; equipment: string; phone?: string; email?: string; mc_number?: string }[];
+    dat_benchmark?: { median_rate: number };
+    ai_confidence?: number;
+    email_body?: string;
+    email_subject?: string;
+    carrier_body?: string;
+    distance?: number;
+    matches?: { name: string; rate?: number; score: number; equipment: string; phone?: string; email?: string; mc_number?: string }[];
+  };
+  dat_benchmark?: { median_rate: number };
+  dat_rate?: number;
+  ai_confidence?: number;
+  drafts?: {
+    shipper_email?: { body: string };
+    carrier_outreach?: { body: string };
+  };
+  shipper_email?: string;
+  carrier_body?: string;
 };
 
 type HistoryItem = {
@@ -89,7 +114,7 @@ const navItems: { id: Section; label: string; icon: typeof LayoutDashboard }[] =
 ];
 
 function money(value: number) {
-  return `$${value.toLocaleString()}`;
+  return `$${(value ?? 0).toLocaleString()}`;
 }
 
 function statusLabel(status: LoadStatus) {
@@ -112,28 +137,98 @@ function AppShell() {
   const [syncOn, setSyncOn] = useState(true);
   const [toast, setToast] = useState('');
 
-  const { pipelines, loading, error, sseStatus, approve, reject, refresh } = usePipelines();
+  const { pipelines: rawPipelines, loading, error, sseStatus, approve, reject, refresh } = usePipelines();
 
-  const loads = pipelines as Load[];
+  const pipelines = rawPipelines as Load[];
 
-  const selectedLoad = loads.find((load) => load.id === selectedId) ?? loads[0];
-  const draftText = selectedLoad ? drafts[selectedLoad.id]?.[draftTab] ?? '' : '';
-  const pendingCount = loads.filter((load) => load.status === 'pending').length;
+  console.log("Pipelines State:", pipelines, "Selected ID:", selectedId);
+
+  const selectedLoad = pipelines.find((p) => p.id === selectedId) || pipelines[0] || null;
+  console.log("Selected Load:", selectedLoad);
+
+  // Early return defaults if no load selected
+  if (!selectedLoad) {
+    const emptyDraft = '';
+    const emptyCarriers: Load['carriers'] = [];
+    const emptyDatMedian = 2450;
+    const emptyMargin = 0;
+    const emptyConfidence = 94;
+    const emptyDistance = 0;
+
+    // These will be used in render functions when selectedLoad is null
+    // We'll handle empty state in renderDetail
+  }
+
+  // Helper to generate fallback drafts
+  const generateShipperDraft = (load: Load) => {
+    const subject = load.review_package?.email_subject ?? `Load ${load.id} - ${load.origin} to ${load.destination}`;
+    const body = load.review_package?.email_body ?? 
+      `Dear ${load.shipper || 'Shipper'},\n\n` +
+      `We are pleased to confirm load ${load.id}:\n` +
+      `Origin: ${load.origin}, ${load.originState}\n` +
+      `Destination: ${load.destination}, ${load.destinationState}\n` +
+      `Equipment: ${load.equipment}\n` +
+      `Rate: ${money(load.rate)}\n` +
+      `Pickup: ${load.pickup}\n` +
+      `Delivery: ${load.delivery}\n\n` +
+      `Please confirm at your earliest convenience.\n\n` +
+      `Best regards,\nFreight Copilot`;
+    return { subject, body };
+  };
+
+  const generateCarrierDraft = (load: Load) => {
+    const body = load.review_package?.carrier_body ?? 
+      `Load Assignment: ${load.id}\n` +
+      `Lane: ${load.origin}, ${load.originState} → ${load.destination}, ${load.destinationState}\n` +
+      `Equipment: ${load.equipment}\n` +
+      `Rate: ${money(load.rate)}\n` +
+      `Pickup: ${load.pickup}\n` +
+      `Delivery: ${load.delivery}\n` +
+      `Commodity: ${load.commodity}\n` +
+      `Weight: ${load.weight}\n\n` +
+      `Please confirm availability.`;
+    return body;
+  };
+
+  const reviewPkg = selectedLoad?.review_package as { drafts?: { shipper_email?: { body: string }; carrier_outreach?: { body: string } }; email_body?: string; email_subject?: string; carrier_body?: string; distance?: number } | undefined;
+  
+  const shipperDraft = selectedLoad ? generateShipperDraft(selectedLoad) : { subject: '', body: '' };
+  const carrierDraft = selectedLoad ? generateCarrierDraft(selectedLoad) : '';
+  
+  const draftText = selectedLoad
+    ? drafts[selectedLoad.id]?.[draftTab] ??
+      (draftTab === 'shipper'
+        ? (selectedLoad.drafts?.shipper_email?.body as string) ?? 
+          (selectedLoad.shipper_email as string) ?? 
+          (reviewPkg?.drafts?.shipper_email?.body as string) ?? 
+          shipperDraft.body
+        : (selectedLoad.drafts?.carrier_outreach?.body as string) ?? 
+          (selectedLoad.carrier_body as string) ?? 
+          (reviewPkg?.drafts?.carrier_outreach?.body as string) ?? 
+          carrierDraft)
+    : '';
+
+  const datMedian = selectedLoad?.dat_benchmark?.median_rate ?? selectedLoad?.dat_rate ?? selectedLoad?.review_package?.dat_benchmark?.median_rate ?? 2450;
+  const quotedRate = selectedLoad?.rate ?? 0;
+  const marginPercent = quotedRate > 0 ? ((quotedRate - datMedian) / quotedRate) * 100 : 0;
+  const aiConfidence = selectedLoad?.ai_confidence ?? selectedLoad?.review_package?.ai_confidence ?? 94;
+
+  const pendingCount = pipelines.filter((load) => (load.status ?? 'pending') === 'pending').length;
 
   const filteredLoads = useMemo(
     () =>
-      loads.filter((load) => {
-        const haystack = `${load.id} ${load.origin} ${load.destination} ${load.shipper}`.toLowerCase();
-        return haystack.includes(query.toLowerCase()) && (statusFilter === 'all' || load.status === statusFilter);
+      pipelines.filter((load) => {
+        const haystack = `${load.id ?? ''} ${load.origin ?? ''} ${load.destination ?? ''} ${load.shipper ?? ''}`.toLowerCase();
+        return haystack.includes(query.toLowerCase()) && (statusFilter === 'all' || (load.status ?? 'pending') === statusFilter);
       }),
-    [loads, query, statusFilter],
+    [pipelines, query, statusFilter],
   );
 
   useEffect(() => {
-    if (loads.length > 0 && !selectedId) {
-      setSelectedId(loads[0].id);
+    if (pipelines.length > 0 && !selectedId) {
+      setSelectedId(pipelines[0].id);
     }
-  }, [loads, selectedId]);
+  }, [pipelines, selectedId]);
 
   function showToast(message: string) {
     setToast(message);
@@ -182,14 +277,14 @@ function AppShell() {
       setHistory((current) => [
         {
           id: selectedLoad.id,
-          route: `${selectedLoad.origin}, ${selectedLoad.originState} → ${selectedLoad.destination}, ${selectedLoad.destinationState}`,
+          route: `${selectedLoad.origin ?? '—'}, ${selectedLoad.originState ?? '—'} → ${selectedLoad.destination ?? '—'}, ${selectedLoad.destinationState ?? '—'}`,
           status,
           timestamp: 'Just now',
-          rate: selectedLoad.rate,
+          rate: selectedLoad.rate ?? 0,
         },
         ...current,
       ]);
-      const nextLoad = loads.find((load) => load.status === 'pending' && load.id !== selectedLoad.id);
+      const nextLoad = pipelines.find((load) => load.status === 'pending' && load.id !== selectedLoad.id);
       setSelectedId(nextLoad?.id ?? '');
       showToast(status === 'approved' ? `${selectedLoad.id} approved and moved to dispatch` : `${selectedLoad.id} rejected and moved to history`);
     } catch (err) {
@@ -255,20 +350,20 @@ function AppShell() {
               >
                 <div className="fc-load-top">
                   <span className="fc-load-id">{load.id}</span>
-                  {renderStatus(load.status)}
+                  {renderStatus(load.status ?? 'pending')}
                 </div>
                 <div className="fc-route">
-                  <span>{load.origin}</span>
+                  <span>{load.origin ?? '—'}</span>
                   <ArrowRight className="fc-route-arrow" size={13} />
-                  <span>{load.destination}</span>
+                  <span>{load.destination ?? '—'}</span>
                 </div>
                 <div className="fc-load-meta">
-                  <span>{load.equipment} · {load.miles} mi</span>
-                  <span className="fc-load-rate">{money(load.rate)}</span>
+                  <span>{load.equipment ?? '—'} · {(load.miles ?? 0)} mi</span>
+                  <span className="fc-load-rate">{money(load.rate ?? 0)}</span>
                 </div>
                 <div className="fc-load-meta">
-                  <span>{load.shipper}</span>
-                  <span className="fc-load-time">{load.received}</span>
+                  <span>{load.shipper ?? '—'}</span>
+                  <span className="fc-load-time">{load.received ?? '—'}</span>
                 </div>
               </button>
             ))
@@ -293,7 +388,7 @@ function AppShell() {
         </section>
       );
     }
-    const benchmarkPercent = Math.min(100, Math.max(35, (selectedLoad.rate / (selectedLoad.benchmark * 1.3)) * 100));
+    const benchmarkPercent = Math.min(100, Math.max(35, ((selectedLoad.rate ?? 0) / ((selectedLoad.benchmark ?? 0) * 1.3)) * 100));
     return (
       <section className="fc-detail" aria-label="Load detail workspace">
         <div className="fc-detail-top">
@@ -337,7 +432,7 @@ function AppShell() {
                 ['Pickup', selectedLoad.pickup, true],
                 ['Delivery', selectedLoad.delivery, true],
                 ['Weight', selectedLoad.weight, false],
-                ['Distance', `${selectedLoad.miles} mi`, false],
+                ['Distance', `${selectedLoad?.review_package?.distance ?? selectedLoad?.miles ?? 0} mi`, false],
                 ['Load ID', selectedLoad.id, false],
                 ['Received', selectedLoad.received, false],
               ].map(([label, value, normal]) => (
@@ -358,19 +453,19 @@ function AppShell() {
               <div className="fc-price-line"><span>Quoted linehaul</span><strong>{money(selectedLoad.rate)}</strong></div>
               <div className="fc-price-track">
                 <div className="fc-price-fill" style={{ width: `${benchmarkPercent}%` }} />
-                <div className="fc-price-marker" style={{ left: `${Math.min(93, (selectedLoad.benchmark / (selectedLoad.benchmark * 1.3)) * 100)}%` }}>
-                  <span>DAT {money(selectedLoad.benchmark)}</span>
+                <div className="fc-price-marker" style={{ left: `${Math.min(93, ((datMedian ?? 0) / ((datMedian ?? 0) * 1.3)) * 100)}%` }}>
+                  <span>DAT {money(datMedian)}</span>
                 </div>
               </div>
-              <div className="fc-price-line"><span>Lane median · Atlanta → Chicago</span><strong>{money(selectedLoad.benchmark)}</strong></div>
+              <div className="fc-price-line"><span>Lane median</span><strong>{money(datMedian)}</strong></div>
               <div className="fc-price-footer">
                 <div>
                   <div className="fc-margin-label">Estimated margin</div>
-                  <div className="fc-margin-value">{selectedLoad.margin.toFixed(1)}%</div>
+                  <div className="fc-margin-value">{marginPercent.toFixed(1)}%</div>
                 </div>
                 <div className="fc-confidence">
                   <div className="fc-confidence-label">AI match confidence</div>
-                  <div className="fc-confidence-value"><ShieldCheck size={13} /> {selectedLoad.confidence}% match</div>
+                  <div className="fc-confidence-value"><ShieldCheck size={13} /> {aiConfidence}% match</div>
                 </div>
               </div>
             </div>
@@ -382,11 +477,11 @@ function AppShell() {
               <span className="fc-panel-caption">TOP 3 · BY FIT</span>
             </div>
             <div className="fc-carrier-list">
-              {selectedLoad.carriers.map((carrier) => (
+              {(selectedLoad?.matched_carriers ?? selectedLoad?.carriers ?? selectedLoad?.review_package?.matched_carriers ?? selectedLoad?.review_package?.matches ?? []).map((carrier) => (
                 <div className="fc-carrier-row" key={carrier.name}>
                   <div>
                     <div className="fc-carrier-name">{carrier.name}</div>
-                    <div className="fc-carrier-eq">{carrier.equipment}</div>
+                    <div className="fc-carrier-eq">{carrier.equipment} {carrier.rate ? `· ${money(carrier.rate)}` : ''} {carrier.mc_number ? `· MC# ${carrier.mc_number}` : ''}</div>
                   </div>
                   <div className="fc-score">
                     <div className="fc-score-track"><div className="fc-score-fill" style={{ width: `${carrier.score}%` }} /></div>
@@ -449,16 +544,16 @@ function AppShell() {
   }
 
   function renderOverview() {
-    const pendingLoads = loads.filter((load) => load.status === 'pending');
-    const dispatchedCount = loads.filter((load) => load.status === 'approved').length;
-    const averageConfidence = loads.length > 0 ? Math.round(loads.reduce((total, load) => total + load.confidence, 0) / loads.length) : 0;
+    const pendingLoads = pipelines.filter((load) => (load.status ?? 'pending') === 'pending');
+    const dispatchedCount = pipelines.filter((load) => (load.status ?? 'pending') === 'approved').length;
+    const averageConfidence = pipelines.length > 0 ? Math.round(pipelines.reduce((total, load) => total + (load.confidence ?? 0), 0) / pipelines.length) : 0;
 
     return (
       <>
         <div className="fc-metric-ribbon">
           <div className="fc-metric">
             <div><div className="fc-metric-label">Loads today</div><div className="fc-metric-note">Inbound freight · as of now</div></div>
-            <div className="fc-metric-value">{loads.length || 14}</div>
+            <div className="fc-metric-value">{pipelines.length || 14}</div>
             <div className="fc-metric-accent"><i style={{ height: '30%' }} /><i style={{ height: '47%' }} /><i style={{ height: '64%' }} /><i style={{ height: '81%' }} /><i style={{ height: '100%' }} /></div>
           </div>
           <div className="fc-metric">
@@ -488,12 +583,12 @@ function AppShell() {
                 >
                   <span className="fc-overview-load-main">
                     <span className="fc-load-id">{load.id}</span>
-                    <strong>{load.origin}, {load.originState} <ArrowRight size={11} /> {load.destination}, {load.destinationState}</strong>
-                    <small>{load.shipper} · {load.received}</small>
+                    <strong>{load.origin ?? '—'}, {load.originState ?? '—'} <ArrowRight size={11} /> {load.destination ?? '—'}, {load.destinationState ?? '—'}</strong>
+                    <small>{load.shipper ?? '—'} · {load.received ?? '—'}</small>
                   </span>
                   <span className="fc-overview-load-side">
-                    <span className="fc-load-rate">{money(load.rate)}</span>
-                    {renderStatus(load.status)}
+                    <span className="fc-load-rate">{money(load.rate ?? 0)}</span>
+                    {renderStatus(load.status ?? 'pending')}
                   </span>
                 </button>
               ))}
@@ -539,17 +634,27 @@ function AppShell() {
   }
 
   function renderBenchmarks() {
+    if (!pipelines.length) {
+      return (
+        <div className="fc-table-panel">
+          <div className="fc-panel-head"><span className="fc-panel-title">DAT lane benchmark monitor</span><span className="fc-panel-caption">NO DATA</span></div>
+          <div className="fc-history-empty"><BarChart3 size={24} /><div>No loads available for benchmarking.</div></div>
+        </div>
+      );
+    }
     return (
       <div className="fc-subpage-grid">
         <div className="fc-table-panel">
           <div className="fc-panel-head"><span className="fc-panel-title">DAT lane benchmark monitor</span><span className="fc-panel-caption">UPDATED 2 MIN AGO</span></div>
           <div className="fc-table-wrap">
             <table className="fc-table">
-              <thead><tr><th>Lane</th><th>Equipment</th><th>Market median</th><th>Active quote</th><th>Variance</th></tr></thead>
+              <thead><tr><th>Lane</th><th>Equipment</th><th>Market median</th><th>Active quote</th></tr></thead>
               <tbody>
-                {loads.map((load) => {
-                  const variance = ((load.rate - load.benchmark) / load.benchmark) * 100;
-                  return <tr key={load.id} data-testid={`row-benchmark-${load.id}`}><td><strong>{load.origin}, {load.originState} <ArrowRight size={11} style={{ verticalAlign: 'middle', margin: '0 4px' }} /> {load.destination}, {load.destinationState}</strong></td><td>{load.equipment}</td><td className="mono">{money(load.benchmark)}</td><td className="mono">{money(load.rate)}</td><td className={variance >= 0 ? 'mono' : 'mono'} style={{ color: variance >= 0 ? '#86d2a3' : '#e0a96d' }}>{variance >= 0 ? '+' : ''}{variance.toFixed(1)}%</td></tr>;
+                {(pipelines ?? []).map((load) => {
+                  const benchmark = load.benchmark ?? 0;
+                  const variance = benchmark > 0 ? (((load.rate ?? 0) - benchmark) / benchmark) * 100 : 0;
+                  const varianceStr = Number.isFinite(variance) ? (variance >= 0 ? '+' : '') + variance.toFixed(1) + '%' : 'N/A';
+                  return <tr key={load.id} data-testid={`row-benchmark-${load.id}`}><td><strong>{load.origin ?? '—'}, {load.originState ?? '—'} <ArrowRight size={11} style={{ verticalAlign: 'middle', margin: '0 4px' }} /> {load.destination ?? '—'}, {load.destinationState ?? '—'}</strong></td><td>{load.equipment ?? '—'}</td><td className="mono">{money(load.benchmark ?? 0)}</td><td className="mono">{money(load.rate ?? 0)}</td><td className={variance >= 0 ? 'mono' : 'mono'} style={{ color: variance >= 0 ? '#86d2a3' : '#e0a96d' }}>{varianceStr}</td></tr>;
                 })}
               </tbody>
             </table>
@@ -585,7 +690,7 @@ function AppShell() {
               <tbody>
                 {history.map((item) => (
                   <tr key={`${item.id}-${item.timestamp}`} data-testid={`row-history-${item.id}`}>
-                    <td className="mono">{item.id}</td><td><strong>{item.route}</strong></td><td>{renderStatus(item.status)}</td><td className="mono">{money(item.rate)}</td><td>{item.timestamp}</td><td><button className="fc-icon-button" data-testid={`button-history-reopen-${item.id}`} onClick={() => { const found = loads.find((load) => load.id === item.id); if (found) { setSelectedId(found.id); setSection('queue'); showToast(`${item.id} reopened in queue`); } else showToast('Archived load details are read-only'); }}><ChevronRight size={14} /></button></td>
+                    <td className="mono">{item.id}</td><td><strong>{item.route}</strong></td><td>{renderStatus(item.status)}</td><td className="mono">{money(item.rate)}</td><td>{item.timestamp}</td><td><button className="fc-icon-button" data-testid={`button-history-reopen-${item.id}`} onClick={() => { const found = pipelines.find((load) => load.id === item.id); if (found) { setSelectedId(found.id); setSection('queue'); showToast(`${item.id} reopened in queue`); } else showToast('Archived load details are read-only'); }}><ChevronRight size={14} /></button></td>
                   </tr>
                 ))}
               </tbody>

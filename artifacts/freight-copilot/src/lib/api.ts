@@ -2,6 +2,24 @@ const BASE = 'http://localhost:8000';
 
 export interface Pipeline {
   id: string;
+  origin: string;
+  destination: string;
+  originState: string;
+  destinationState: string;
+  equipment: string;
+  rate: number;
+  benchmark: number;
+  margin: number;
+  confidence: number;
+  weight: string;
+  miles: number;
+  commodity: string;
+  shipper: string;
+  pickup: string;
+  delivery: string;
+  received: string;
+  status: 'pending' | 'approved' | 'rejected';
+  carriers: Array<{ name: string; score: number; equipment: string; phone: string; email?: string }>;
   review_summary: ReviewSummary;
   [key: string]: unknown;
 }

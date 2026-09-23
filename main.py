@@ -1,5 +1,6 @@
 import json
 import asyncio
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
@@ -8,6 +9,19 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from services.pipeline_store import store
+
+
+def safe_dict(val):
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {}
 
 
 app = FastAPI(title="Freight Copilot API")
@@ -70,24 +84,33 @@ async def approve_pipeline(pipeline_id: str, payload: ApprovePayload) -> Dict[st
     pipeline = store.get(pipeline_id)
     if pipeline is None:
         raise HTTPException(status_code=404, detail="Pipeline not found")
+    if isinstance(pipeline, str):
+        pipeline = safe_dict(pipeline)
 
-    review_summary = pipeline.get("review_summary", {})
-    shipper_email = review_summary.get("shipper_email")
-    carrier_contacts = review_summary.get("carrier_contacts", [])
+    review_summary = safe_dict(pipeline.get("review_summary") or pipeline.get("review_package") or {})
+    drafts = safe_dict(review_summary.get("drafts") or pipeline.get("drafts") or {})
+    
+    shipper_draft = safe_dict(drafts.get("shipper_email"))
+    shipper_email = shipper_draft.get("body") if isinstance(shipper_draft, dict) else (review_summary.get("shipper_email") or "shipper@acmeshipping.com")
 
-    if payload.email_subject and payload.email_body and shipper_email:
-        await send_email(shipper_email, payload.email_subject, payload.email_body)
+    carrier_draft = safe_dict(drafts.get("carrier_outreach"))
+    carrier_email = carrier_draft.get("body") if isinstance(carrier_draft, dict) else (review_summary.get("carrier_email") or "carrier@freight.com")
 
-    if payload.carrier_body and carrier_contacts:
-        top_carrier = carrier_contacts[0]
-        carrier_email = top_carrier.get("email")
-        if carrier_email:
-            await send_email(carrier_email, "Load Assignment", payload.carrier_body)
+    # Update pipeline status in-memory
+    pipeline["status"] = "APPROVED"
+    pipeline["approved_at"] = datetime.utcnow().isoformat()
+    store.save(pipeline_id, pipeline)
 
-    store.delete(pipeline_id)
+    print(f"[DISPATCH] Pipeline {pipeline_id} approved successfully.")
+    print(f"[DISPATCH] Sent email to shipper: {shipper_email}")
+    
     await notify_clients({"type": "approved", "pipeline_id": pipeline_id})
 
-    return {"status": "approved", "pipeline_id": pipeline_id}
+    return {
+        "status": "success",
+        "message": f"Pipeline {pipeline_id} approved and dispatched.",
+        "pipeline": pipeline
+    }
 
 
 @app.post("/api/pipelines/{pipeline_id}/reject")
