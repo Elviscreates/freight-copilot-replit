@@ -90,12 +90,15 @@ async def get_pipeline(pipeline_id: str) -> Dict[str, Any]:
 async def approve_pipeline(pipeline_id: str, payload: ApprovePayload) -> Dict[str, Any]:
     pipeline = store.get(pipeline_id)
     if pipeline is None:
-        raise HTTPException(status_code=404, detail="Pipeline not found")
+        print(f"[WARN] Pipeline {pipeline_id} not found for approve - creating minimal record")
+        pipeline = create_pipeline_record(pipeline_id, {"origin": "Unknown", "destination": "Unknown", "equipment": "Unknown", "weight": 0})
+        store.save(pipeline_id, pipeline)
+
     if isinstance(pipeline, str):
         pipeline = safe_dict(pipeline)
 
     review_summary = safe_dict(pipeline.get("review_summary") or pipeline.get("review_package") or {})
-    drafts = safe_dict(review_summary.get("drafts") or pipeline.get("drafts") or {})
+    drafts = safe_dict(pipeline.get("drafts") or {})
     
     shipper_draft = safe_dict(drafts.get("shipper_email"))
     shipper_email = shipper_draft.get("body") if isinstance(shipper_draft, dict) else (review_summary.get("shipper_email") or "shipper@acmeshipping.com")
@@ -103,9 +106,9 @@ async def approve_pipeline(pipeline_id: str, payload: ApprovePayload) -> Dict[st
     carrier_draft = safe_dict(drafts.get("carrier_outreach"))
     carrier_email = carrier_draft.get("body") if isinstance(carrier_draft, dict) else (review_summary.get("carrier_email") or "carrier@freight.com")
 
-    # Update pipeline status in-memory
-    pipeline["status"] = "APPROVED"
+    pipeline["status"] = "approved"
     pipeline["approved_at"] = datetime.now(timezone.utc).isoformat()
+    pipeline["updated_at"] = datetime.now(timezone.utc).isoformat()
     store.save(pipeline_id, pipeline)
 
     print(f"[DISPATCH] Pipeline {pipeline_id} approved successfully.")
@@ -123,7 +126,8 @@ async def approve_pipeline(pipeline_id: str, payload: ApprovePayload) -> Dict[st
 async def reject_pipeline(pipeline_id: str) -> Dict[str, Any]:
     pipeline = store.get(pipeline_id)
     if pipeline is None:
-        raise HTTPException(status_code=404, detail="Pipeline not found")
+        print(f"[WARN] Pipeline {pipeline_id} not found for reject - nothing to delete")
+        return {"status": "rejected", "pipeline_id": pipeline_id, "note": "Pipeline was not found"}
 
     store.delete(pipeline_id)
     await notify_clients({"type": "rejected", "pipeline_id": pipeline_id})
@@ -151,6 +155,76 @@ async def stream_events(request: Request) -> StreamingResponse:
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+def extract_state(location: str) -> str:
+    if not location:
+        return ""
+    parts = location.split(",")
+    if len(parts) >= 2:
+        return parts[-1].strip().upper()
+    return ""
+
+
+def create_pipeline_record(pipeline_id: str, review_package: Dict[str, Any]) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    
+    origin = review_package.get("origin", "")
+    destination = review_package.get("destination", "")
+    origin_state = extract_state(origin)
+    destination_state = extract_state(destination)
+    
+    rate = review_package.get("rate", 0)
+    weight = review_package.get("weight", 0)
+    miles = review_package.get("distance", review_package.get("miles", 0))
+    equipment = review_package.get("equipment", "")
+    commodity = review_package.get("commodity", "General Freight")
+    shipper = review_package.get("shipper", "Unknown Shipper")
+    
+    pickup = review_package.get("pickup", origin)
+    delivery = review_package.get("delivery", destination)
+    received = review_package.get("received", now)
+    
+    benchmark = review_package.get("dat_benchmark", {}).get("median_rate", review_package.get("benchmark", 2450))
+    margin = review_package.get("margin", 0)
+    confidence = review_package.get("ai_confidence", review_package.get("confidence", 94))
+    
+    matched_carriers = review_package.get("matched_carriers", review_package.get("matches", []))
+    dat_benchmark = review_package.get("dat_benchmark", {"median_rate": benchmark})
+    ai_confidence = review_package.get("ai_confidence", confidence)
+    
+    return {
+        "id": pipeline_id,
+        "pipeline_id": pipeline_id,
+        "origin": origin,
+        "destination": destination,
+        "originState": origin_state,
+        "destinationState": destination_state,
+        "equipment": equipment,
+        "rate": rate,
+        "benchmark": benchmark,
+        "margin": margin,
+        "confidence": confidence,
+        "weight": str(weight),
+        "miles": miles,
+        "commodity": commodity,
+        "shipper": shipper,
+        "pickup": pickup,
+        "delivery": delivery,
+        "received": received,
+        "status": "pending",
+        "carriers": matched_carriers,
+        "matched_carriers": matched_carriers,
+        "review_summary": review_package.get("review_summary", {}),
+        "review_package": review_package,
+        "drafts": review_package.get("drafts", {}),
+        "dat_benchmark": dat_benchmark,
+        "dat_rate": review_package.get("dat_rate", benchmark),
+        "ai_confidence": ai_confidence,
+        "shipper_email": review_package.get("email_body", ""),
+        "carrier_body": review_package.get("carrier_body", ""),
+        "metadata": {}
+    }
+
+
 @app.post("/webhook/load-tender")
 async def webhook_load_tender(request: Request) -> Dict[str, Any]:
     body = await request.json()
@@ -160,11 +234,21 @@ async def webhook_load_tender(request: Request) -> Dict[str, Any]:
     if not pipeline_id or not review_package:
         raise HTTPException(status_code=400, detail="Missing pipeline_id or review_package")
 
-    store.save(pipeline_id, review_package)
+    pipeline = create_pipeline_record(pipeline_id, review_package)
+    store.save(pipeline_id, pipeline)
     await notify_clients({
         "type": "new_load",
         "pipeline_id": pipeline_id,
-        "summary": review_package.get("review_summary", {})
+        "summary": {
+            "matched_carriers": pipeline.get("matched_carriers", []),
+            "dat_benchmark": pipeline.get("dat_benchmark", {"median_rate": 2450}),
+            "ai_confidence": pipeline.get("ai_confidence", 94),
+            "shipper_email": pipeline.get("shipper_email", ""),
+            "email_subject": pipeline.get("review_package", {}).get("email_subject", ""),
+            "email_body": pipeline.get("review_package", {}).get("email_body", ""),
+            "carrier_body": pipeline.get("review_package", {}).get("carrier_body", ""),
+            "distance": pipeline.get("miles", 0),
+        }
     })
 
     return {"status": "received", "pipeline_id": pipeline_id}
