@@ -9,8 +9,11 @@ import {
   CheckCircle2,
   ChevronRight,
   ClipboardCheck,
+  Eye,
+  EyeOff,
   History as HistoryIcon,
   LayoutDashboard,
+  LockKeyhole,
   Mail,
   Menu,
   MessageSquare,
@@ -23,18 +26,16 @@ import {
   SlidersHorizontal,
   X,
   Zap,
-  Wifi,
-  WifiOff,
 } from 'lucide-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
-import { usePipelines } from '@/hooks/usePipelines';
 
 const queryClient = new QueryClient();
 const brandMarkSrc = `${import.meta.env.BASE_URL}branding/freight-copilot-mark.png`;
+const brandLogoSrc = `${import.meta.env.BASE_URL}branding/freight-copilot-logo.png`;
 
 type Section = 'overview' | 'queue' | 'benchmarks' | 'history' | 'settings';
 type LoadStatus = 'pending' | 'approved' | 'rejected';
@@ -42,7 +43,6 @@ type DraftChannel = 'shipper' | 'carrier';
 
 type Load = {
   id: string;
-  pipeline_id?: string;
   origin: string;
   destination: string;
   originState: string;
@@ -60,35 +60,7 @@ type Load = {
   delivery: string;
   received: string;
   status: LoadStatus;
-  carriers: { name: string; score: number; equipment: string; phone: string; email?: string; rate?: number; mc_number?: string }[];
-  matched_carriers?: { name: string; rate?: number; score: number; equipment: string; phone?: string; email?: string; mc_number?: string }[];
-  review_summary?: {
-    shipper_email?: string;
-    carrier_contacts?: Array<{ email?: string; name?: string }>;
-  };
-  review_package?: {
-    drafts?: {
-      shipper_email?: { body: string };
-      carrier_outreach?: { body: string };
-    };
-    matched_carriers?: { name: string; rate?: number; score: number; equipment: string; phone?: string; email?: string; mc_number?: string }[];
-    dat_benchmark?: { median_rate: number };
-    ai_confidence?: number;
-    email_body?: string;
-    email_subject?: string;
-    carrier_body?: string;
-    distance?: number;
-    matches?: { name: string; rate?: number; score: number; equipment: string; phone?: string; email?: string; mc_number?: string }[];
-  };
-  dat_benchmark?: { median_rate: number };
-  dat_rate?: number;
-  ai_confidence?: number;
-  drafts?: {
-    shipper_email?: { body: string };
-    carrier_outreach?: { body: string };
-  };
-  shipper_email?: string;
-  carrier_body?: string;
+  carriers: { name: string; score: number; equipment: string; phone: string }[];
 };
 
 type HistoryItem = {
@@ -98,6 +70,144 @@ type HistoryItem = {
   timestamp: string;
   rate: number;
 };
+
+const mockLoads: Load[] = [
+  {
+    id: 'FC-2048',
+    origin: 'Atlanta',
+    destination: 'Chicago',
+    originState: 'GA',
+    destinationState: 'IL',
+    equipment: "53' Dry Van",
+    rate: 3200,
+    benchmark: 3050,
+    margin: 18.6,
+    confidence: 94,
+    weight: '42,800 lb',
+    miles: 716,
+    commodity: 'Packaged foods',
+    shipper: 'Pine & Rail Foods',
+    pickup: 'May 21 · 08:00–10:00',
+    delivery: 'May 22 · 14:00–16:00',
+    received: '2 min ago',
+    status: 'pending',
+    carriers: [
+      { name: 'Blue Ridge Logistics', score: 96, equipment: '53\' Dry Van · 4.8★', phone: '(404) 555-0192' },
+      { name: 'Northline Carriers', score: 91, equipment: '53\' Dry Van · 4.7★', phone: '(773) 555-0124' },
+      { name: 'Copper State Freight', score: 87, equipment: 'Reefer / Dry Van · 4.6★', phone: '(312) 555-0168' },
+    ],
+  },
+  {
+    id: 'FC-2047',
+    origin: 'Dallas',
+    destination: 'Phoenix',
+    originState: 'TX',
+    destinationState: 'AZ',
+    equipment: "48' Dry Van",
+    rate: 2450,
+    benchmark: 2510,
+    margin: 12.4,
+    confidence: 88,
+    weight: '38,200 lb',
+    miles: 1065,
+    commodity: 'Consumer electronics',
+    shipper: 'Westgate Supply Co.',
+    pickup: 'May 21 · 13:00–15:00',
+    delivery: 'May 23 · 09:00–12:00',
+    received: '7 min ago',
+    status: 'pending',
+    carriers: [
+      { name: 'Desert Linehaul', score: 92, equipment: '48\' Dry Van · 4.7★', phone: '(602) 555-0171' },
+      { name: 'Red River Transit', score: 85, equipment: '53\' Dry Van · 4.6★', phone: '(214) 555-0110' },
+      { name: 'Mesa Freightworks', score: 81, equipment: 'Dry Van · 4.5★', phone: '(480) 555-0135' },
+    ],
+  },
+  {
+    id: 'FC-2046',
+    origin: 'Columbus',
+    destination: 'Nashville',
+    originState: 'OH',
+    destinationState: 'TN',
+    equipment: "53' Reefer",
+    rate: 1980,
+    benchmark: 1905,
+    margin: 16.2,
+    confidence: 91,
+    weight: '39,500 lb',
+    miles: 423,
+    commodity: 'Fresh produce',
+    shipper: 'Harvest Table Markets',
+    pickup: 'May 21 · 06:00–08:00',
+    delivery: 'May 21 · 18:00–20:00',
+    received: '14 min ago',
+    status: 'pending',
+    carriers: [
+      { name: 'Midwest Cold Chain', score: 94, equipment: '53\' Reefer · 4.9★', phone: '(614) 555-0183' },
+      { name: 'Volunteer Express', score: 89, equipment: '53\' Reefer · 4.8★', phone: '(615) 555-0107' },
+      { name: 'Freshway Transport', score: 84, equipment: 'Reefer · 4.6★', phone: '(317) 555-0129' },
+    ],
+  },
+  {
+    id: 'FC-2045',
+    origin: 'Savannah',
+    destination: 'Charlotte',
+    originState: 'GA',
+    destinationState: 'NC',
+    equipment: "53' Dry Van",
+    rate: 1260,
+    benchmark: 1340,
+    margin: 8.7,
+    confidence: 73,
+    weight: '44,100 lb',
+    miles: 259,
+    commodity: 'Building materials',
+    shipper: 'Meridian Home Goods',
+    pickup: 'May 21 · 10:00–12:00',
+    delivery: 'May 21 · 17:00–19:00',
+    received: '21 min ago',
+    status: 'pending',
+    carriers: [
+      { name: 'Pioneer Haulage', score: 84, equipment: '53\' Dry Van · 4.6★', phone: '(912) 555-0109' },
+      { name: 'Queen City Freight', score: 79, equipment: '53\' Dry Van · 4.5★', phone: '(704) 555-0148' },
+      { name: 'Carolina Direct', score: 74, equipment: 'Dry Van · 4.5★', phone: '(803) 555-0156' },
+    ],
+  },
+  {
+    id: 'FC-2044',
+    origin: 'Memphis',
+    destination: 'St. Louis',
+    originState: 'TN',
+    destinationState: 'MO',
+    equipment: "53' Dry Van",
+    rate: 980,
+    benchmark: 1020,
+    margin: 10.1,
+    confidence: 82,
+    weight: '41,600 lb',
+    miles: 283,
+    commodity: 'Paper products',
+    shipper: 'Atlas Industrial',
+    pickup: 'May 21 · 15:00–17:00',
+    delivery: 'May 22 · 08:00–10:00',
+    received: '28 min ago',
+    status: 'pending',
+    carriers: [
+      { name: 'Gateway Freight', score: 88, equipment: '53\' Dry Van · 4.7★', phone: '(314) 555-0103' },
+      { name: 'Delta Roadways', score: 83, equipment: 'Dry Van · 4.5★', phone: '(901) 555-0133' },
+      { name: 'Heartland Haul', score: 76, equipment: 'Dry Van · 4.4★', phone: '(636) 555-0119' },
+    ],
+  },
+];
+
+const starterDrafts: Record<string, Record<DraftChannel, string>> = Object.fromEntries(
+  mockLoads.map((load) => [
+    load.id,
+    {
+      shipper: `Hi ${load.shipper} team,\n\nFreight Copilot has matched a carrier for your ${load.origin}, ${load.originState} → ${load.destination}, ${load.destinationState} shipment. The quoted linehaul is $${load.rate.toLocaleString()} and pickup is scheduled for ${load.pickup}.\n\nPlease confirm the appointment window and let us know if anything has changed.\n\nBest,\nDispatch Operations`,
+      carrier: `Hi carrier team — we have a ${load.equipment} load available from ${load.origin}, ${load.originState} to ${load.destination}, ${load.destinationState}. Pickup: ${load.pickup}. Linehaul: $${load.rate.toLocaleString()}. Reply YES to confirm capacity and we will send the rate confirmation.`,
+    },
+  ]),
+);
 
 const initialHistory: HistoryItem[] = [
   { id: 'FC-2039', route: 'Jacksonville, FL → Raleigh, NC', status: 'approved', timestamp: 'Today, 09:42', rate: 1425 },
@@ -114,7 +224,7 @@ const navItems: { id: Section; label: string; icon: typeof LayoutDashboard }[] =
 ];
 
 function money(value: number) {
-  return `$${(value ?? 0).toLocaleString()}`;
+  return `$${value.toLocaleString()}`;
 }
 
 function statusLabel(status: LoadStatus) {
@@ -123,112 +233,153 @@ function statusLabel(status: LoadStatus) {
   return 'Pending review';
 }
 
+function LoginPage() {
+  const [, setLocation] = useLocation();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [notice, setNotice] = useState('');
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!email || !password) {
+      setNotice('Enter your email and password to continue.');
+      return;
+    }
+    setNotice('');
+    setLocation('/dashboard');
+  }
+
+  return (
+    <div className="fc-login">
+      <section className="fc-login-panel" aria-label="Sign in to Freight Copilot">
+        <div className="fc-login-form-wrap">
+          <div className="fc-login-brand">
+            <div className="fc-login-brand-mark"><img src={brandMarkSrc} alt="" /></div>
+            <div className="fc-login-brand-wordmark"><span>FREIGHT</span><strong>COPILOT</strong></div>
+          </div>
+
+          <div className="fc-login-heading">
+            <h1>Welcome <span>back</span></h1>
+            <p>Sign in to access your logistics dashboard,<br />track shipments and manage your operations.</p>
+          </div>
+
+          <form className="fc-login-form" onSubmit={handleSubmit}>
+            <label className="fc-login-field">
+              <span>Email</span>
+              <div className="fc-login-input-wrap">
+                <Mail size={14} />
+                <input
+                  type="email"
+                  placeholder="you@company.com"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  autoComplete="email"
+                  aria-label="Email"
+                />
+              </div>
+            </label>
+            <label className="fc-login-field">
+              <span>Password</span>
+              <div className="fc-login-input-wrap">
+                <LockKeyhole size={14} />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="Enter your password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  autoComplete="current-password"
+                  aria-label="Password"
+                />
+                <button
+                  type="button"
+                  className="fc-login-password-toggle"
+                  onClick={() => setShowPassword((current) => !current)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
+            </label>
+
+            <button className="fc-login-submit" type="submit">
+              Sign In <ArrowRight size={14} />
+            </button>
+            {notice && <div className="fc-login-notice" role="status">{notice}</div>}
+          </form>
+
+          <div className="fc-login-divider"><span>Or continue with</span></div>
+          <div className="fc-login-providers">
+            <button type="button" onClick={() => setNotice('Google sign-in is ready to connect.')}>
+              <span className="fc-provider-google">G</span> Google
+            </button>
+            <button type="button" onClick={() => setNotice('Microsoft sign-in is ready to connect.')}>
+              <span className="fc-provider-microsoft"><i /><i /><i /><i /></span> Microsoft
+            </button>
+            <button type="button" onClick={() => setNotice('SSO sign-in is ready to connect.')}>
+              <ShieldCheck size={14} /> SSO
+            </button>
+          </div>
+          <p className="fc-login-admin">Don't have an account? <button type="button" onClick={() => setNotice('Contact your workspace administrator for access.')}>Contact your admin</button></p>
+        </div>
+      </section>
+
+      <section className="fc-login-visual" aria-label="Freight Copilot">
+        <div className="fc-login-slash fc-login-slash-top" />
+        <div className="fc-login-slash fc-login-slash-bottom" />
+        <div className="fc-login-hero-lockup">
+          <img src={brandLogoSrc} alt="Freight Copilot" />
+          <p>SMARTER LOGISTICS. FASTER DELIVERIES.</p>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function AppShell() {
   const [section, setSection] = useState<Section>('overview');
-  const [selectedId, setSelectedId] = useState<string>('');
+  const [loads, setLoads] = useState<Load[]>(mockLoads);
+  const [selectedId, setSelectedId] = useState(mockLoads[0].id);
   const [history, setHistory] = useState<HistoryItem[]>(initialHistory);
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | LoadStatus>('all');
-  const [drafts, setDrafts] = useState<Record<string, Record<DraftChannel, string>>>({});
+  const [drafts, setDrafts] = useState(starterDrafts);
   const [draftTab, setDraftTab] = useState<DraftChannel>('shipper');
   const [autoSave, setAutoSave] = useState(true);
   const [draftDirty, setDraftDirty] = useState(false);
   const [saveState, setSaveState] = useState<'saved' | 'saving'>('saved');
   const [syncOn, setSyncOn] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState('');
 
-  const { pipelines: rawPipelines, loading, error, sseStatus, approve, reject, refresh } = usePipelines();
-
-  const pipelines = rawPipelines as Load[];
-
-  console.log("Pipelines State:", pipelines, "Selected ID:", selectedId);
-
-  const selectedLoad = pipelines.find((p) => p.id === selectedId) || pipelines[0] || null;
-  console.log("Selected Load:", selectedLoad);
-
-  // Early return defaults if no load selected
-  if (!selectedLoad) {
-    const emptyDraft = '';
-    const emptyCarriers: Load['carriers'] = [];
-    const emptyDatMedian = 2450;
-    const emptyMargin = 0;
-    const emptyConfidence = 94;
-    const emptyDistance = 0;
-
-    // These will be used in render functions when selectedLoad is null
-    // We'll handle empty state in renderDetail
-  }
-
-  // Helper to generate fallback drafts
-  const generateShipperDraft = (load: Load) => {
-    const subject = load.review_package?.email_subject ?? `Load ${load.id} - ${load.origin} to ${load.destination}`;
-    const body = load.review_package?.email_body ?? 
-      `Dear ${load.shipper || 'Shipper'},\n\n` +
-      `We are pleased to confirm load ${load.id}:\n` +
-      `Origin: ${load.origin}, ${load.originState}\n` +
-      `Destination: ${load.destination}, ${load.destinationState}\n` +
-      `Equipment: ${load.equipment}\n` +
-      `Rate: ${money(load.rate)}\n` +
-      `Pickup: ${load.pickup}\n` +
-      `Delivery: ${load.delivery}\n\n` +
-      `Please confirm at your earliest convenience.\n\n` +
-      `Best regards,\nFreight Copilot`;
-    return { subject, body };
-  };
-
-  const generateCarrierDraft = (load: Load) => {
-    const body = load.review_package?.carrier_body ?? 
-      `Load Assignment: ${load.id}\n` +
-      `Lane: ${load.origin}, ${load.originState} → ${load.destination}, ${load.destinationState}\n` +
-      `Equipment: ${load.equipment}\n` +
-      `Rate: ${money(load.rate)}\n` +
-      `Pickup: ${load.pickup}\n` +
-      `Delivery: ${load.delivery}\n` +
-      `Commodity: ${load.commodity}\n` +
-      `Weight: ${load.weight}\n\n` +
-      `Please confirm availability.`;
-    return body;
-  };
-
-  const reviewPkg = selectedLoad?.review_package as { drafts?: { shipper_email?: { body: string }; carrier_outreach?: { body: string } }; email_body?: string; email_subject?: string; carrier_body?: string; distance?: number } | undefined;
-  
-  const shipperDraft = selectedLoad ? generateShipperDraft(selectedLoad) : { subject: '', body: '' };
-  const carrierDraft = selectedLoad ? generateCarrierDraft(selectedLoad) : '';
-  
-  const draftText = selectedLoad
-    ? drafts[selectedLoad.id]?.[draftTab] ??
-      (draftTab === 'shipper'
-        ? (selectedLoad.drafts?.shipper_email?.body as string) ?? 
-          (selectedLoad.shipper_email as string) ?? 
-          (reviewPkg?.drafts?.shipper_email?.body as string) ?? 
-          shipperDraft.body
-        : (selectedLoad.drafts?.carrier_outreach?.body as string) ?? 
-          (selectedLoad.carrier_body as string) ?? 
-          (reviewPkg?.drafts?.carrier_outreach?.body as string) ?? 
-          carrierDraft)
-    : '';
-
-  const datMedian = selectedLoad?.dat_benchmark?.median_rate ?? selectedLoad?.dat_rate ?? selectedLoad?.review_package?.dat_benchmark?.median_rate ?? 2450;
-  const quotedRate = selectedLoad?.rate ?? 0;
-  const marginPercent = quotedRate > 0 ? ((quotedRate - datMedian) / quotedRate) * 100 : 0;
-  const aiConfidence = selectedLoad?.ai_confidence ?? selectedLoad?.review_package?.ai_confidence ?? 94;
-
-  const pendingCount = pipelines.filter((load) => (load.status ?? 'pending') === 'pending').length;
+  const selectedLoad = loads.find((load) => load.id === selectedId) ?? loads[0];
+  const draftText = selectedLoad ? drafts[selectedLoad.id]?.[draftTab] ?? '' : '';
+  const pendingCount = loads.filter((load) => load.status === 'pending').length;
 
   const filteredLoads = useMemo(
     () =>
-      pipelines.filter((load) => {
-        const haystack = `${load.id ?? ''} ${load.origin ?? ''} ${load.destination ?? ''} ${load.shipper ?? ''}`.toLowerCase();
-        return haystack.includes(query.toLowerCase()) && (statusFilter === 'all' || (load.status ?? 'pending') === statusFilter);
+      loads.filter((load) => {
+        const haystack = `${load.id} ${load.origin} ${load.destination} ${load.shipper}`.toLowerCase();
+        return haystack.includes(query.toLowerCase()) && (statusFilter === 'all' || load.status === statusFilter);
       }),
-    [pipelines, query, statusFilter],
+    [loads, query, statusFilter],
   );
 
   useEffect(() => {
-    if (pipelines.length > 0 && !selectedId) {
-      setSelectedId(pipelines[0].id);
-    }
-  }, [pipelines, selectedId]);
+    const timer = window.setTimeout(() => setLoading(false), 520);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!autoSave || !draftDirty || !selectedLoad) return;
+    setSaveState('saving');
+    const timer = window.setTimeout(() => {
+      setSaveState('saved');
+      setDraftDirty(false);
+      showToast('Draft saved locally');
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [autoSave, draftDirty, draftText, selectedLoad]);
 
   function showToast(message: string) {
     setToast(message);
@@ -259,42 +410,30 @@ function AppShell() {
     showToast(`${channel} draft opened for ${name}`);
   }
 
-  async function moveLoad(status: 'approved' | 'rejected') {
+  function moveLoad(status: 'approved' | 'rejected') {
     if (!selectedLoad || selectedLoad.status !== 'pending') return;
-
-    const draftPayload = {
-      email_subject: drafts[selectedLoad.id]?.shipper?.split('\n')[0]?.replace('Hi ', '').replace(' team,', '') || 'Load Update',
-      email_body: drafts[selectedLoad.id]?.shipper || '',
-      carrier_body: drafts[selectedLoad.id]?.carrier || '',
-    };
-
-    try {
-      if (status === 'approved') {
-        await approve(selectedLoad.id, draftPayload);
-      } else {
-        await reject(selectedLoad.id);
-      }
-      setHistory((current) => [
-        {
-          id: selectedLoad.id,
-          route: `${selectedLoad.origin ?? '—'}, ${selectedLoad.originState ?? '—'} → ${selectedLoad.destination ?? '—'}, ${selectedLoad.destinationState ?? '—'}`,
-          status,
-          timestamp: 'Just now',
-          rate: selectedLoad.rate ?? 0,
-        },
-        ...current,
-      ]);
-      const nextLoad = pipelines.find((load) => load.status === 'pending' && load.id !== selectedLoad.id);
-      setSelectedId(nextLoad?.id ?? '');
-      showToast(status === 'approved' ? `${selectedLoad.id} approved and moved to dispatch` : `${selectedLoad.id} rejected and moved to history`);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Action failed');
-    }
+    const nextLoad = loads.find((load) => load.status === 'pending' && load.id !== selectedLoad.id);
+    setLoads((current) => current.map((load) => (load.id === selectedLoad.id ? { ...load, status } : load)));
+    setHistory((current) => [
+      {
+        id: selectedLoad.id,
+        route: `${selectedLoad.origin}, ${selectedLoad.originState} → ${selectedLoad.destination}, ${selectedLoad.destinationState}`,
+        status,
+        timestamp: 'Just now',
+        rate: selectedLoad.rate,
+      },
+      ...current,
+    ]);
+    setSelectedId(nextLoad?.id ?? selectedLoad.id);
+    showToast(status === 'approved' ? `${selectedLoad.id} approved and moved to dispatch` : `${selectedLoad.id} rejected and moved to history`);
   }
 
   function refreshDashboard() {
-    refresh();
-    showToast('Queue refreshed · all signals current');
+    setLoading(true);
+    window.setTimeout(() => {
+      setLoading(false);
+      showToast('Queue refreshed · all signals current');
+    }, 550);
   }
 
   function renderStatus(status: LoadStatus) {
@@ -350,20 +489,20 @@ function AppShell() {
               >
                 <div className="fc-load-top">
                   <span className="fc-load-id">{load.id}</span>
-                  {renderStatus(load.status ?? 'pending')}
+                  {renderStatus(load.status)}
                 </div>
                 <div className="fc-route">
-                  <span>{load.origin ?? '—'}</span>
+                  <span>{load.origin}</span>
                   <ArrowRight className="fc-route-arrow" size={13} />
-                  <span>{load.destination ?? '—'}</span>
+                  <span>{load.destination}</span>
                 </div>
                 <div className="fc-load-meta">
-                  <span>{load.equipment ?? '—'} · {(load.miles ?? 0)} mi</span>
-                  <span className="fc-load-rate">{money(load.rate ?? 0)}</span>
+                  <span>{load.equipment} · {load.miles} mi</span>
+                  <span className="fc-load-rate">{money(load.rate)}</span>
                 </div>
                 <div className="fc-load-meta">
-                  <span>{load.shipper ?? '—'}</span>
-                  <span className="fc-load-time">{load.received ?? '—'}</span>
+                  <span>{load.shipper}</span>
+                  <span className="fc-load-time">{load.received}</span>
                 </div>
               </button>
             ))
@@ -388,7 +527,7 @@ function AppShell() {
         </section>
       );
     }
-    const benchmarkPercent = Math.min(100, Math.max(35, ((selectedLoad.rate ?? 0) / ((selectedLoad.benchmark ?? 0) * 1.3)) * 100));
+    const benchmarkPercent = Math.min(100, Math.max(35, (selectedLoad.rate / (selectedLoad.benchmark * 1.3)) * 100));
     return (
       <section className="fc-detail" aria-label="Load detail workspace">
         <div className="fc-detail-top">
@@ -432,7 +571,7 @@ function AppShell() {
                 ['Pickup', selectedLoad.pickup, true],
                 ['Delivery', selectedLoad.delivery, true],
                 ['Weight', selectedLoad.weight, false],
-                ['Distance', `${selectedLoad?.review_package?.distance ?? selectedLoad?.miles ?? 0} mi`, false],
+                ['Distance', `${selectedLoad.miles} mi`, false],
                 ['Load ID', selectedLoad.id, false],
                 ['Received', selectedLoad.received, false],
               ].map(([label, value, normal]) => (
@@ -453,19 +592,19 @@ function AppShell() {
               <div className="fc-price-line"><span>Quoted linehaul</span><strong>{money(selectedLoad.rate)}</strong></div>
               <div className="fc-price-track">
                 <div className="fc-price-fill" style={{ width: `${benchmarkPercent}%` }} />
-                <div className="fc-price-marker" style={{ left: `${Math.min(93, ((datMedian ?? 0) / ((datMedian ?? 0) * 1.3)) * 100)}%` }}>
-                  <span>DAT {money(datMedian)}</span>
+                <div className="fc-price-marker" style={{ left: `${Math.min(93, (selectedLoad.benchmark / (selectedLoad.benchmark * 1.3)) * 100)}%` }}>
+                  <span>DAT {money(selectedLoad.benchmark)}</span>
                 </div>
               </div>
-              <div className="fc-price-line"><span>Lane median</span><strong>{money(datMedian)}</strong></div>
+              <div className="fc-price-line"><span>Lane median · Atlanta → Chicago</span><strong>{money(selectedLoad.benchmark)}</strong></div>
               <div className="fc-price-footer">
                 <div>
                   <div className="fc-margin-label">Estimated margin</div>
-                  <div className="fc-margin-value">{marginPercent.toFixed(1)}%</div>
+                  <div className="fc-margin-value">{selectedLoad.margin.toFixed(1)}%</div>
                 </div>
                 <div className="fc-confidence">
                   <div className="fc-confidence-label">AI match confidence</div>
-                  <div className="fc-confidence-value"><ShieldCheck size={13} /> {aiConfidence}% match</div>
+                  <div className="fc-confidence-value"><ShieldCheck size={13} /> {selectedLoad.confidence}% match</div>
                 </div>
               </div>
             </div>
@@ -477,11 +616,11 @@ function AppShell() {
               <span className="fc-panel-caption">TOP 3 · BY FIT</span>
             </div>
             <div className="fc-carrier-list">
-              {(selectedLoad?.matched_carriers ?? selectedLoad?.carriers ?? selectedLoad?.review_package?.matched_carriers ?? selectedLoad?.review_package?.matches ?? []).map((carrier) => (
+              {selectedLoad.carriers.map((carrier) => (
                 <div className="fc-carrier-row" key={carrier.name}>
                   <div>
                     <div className="fc-carrier-name">{carrier.name}</div>
-                    <div className="fc-carrier-eq">{carrier.equipment} {carrier.rate ? `· ${money(carrier.rate)}` : ''} {carrier.mc_number ? `· MC# ${carrier.mc_number}` : ''}</div>
+                    <div className="fc-carrier-eq">{carrier.equipment}</div>
                   </div>
                   <div className="fc-score">
                     <div className="fc-score-track"><div className="fc-score-fill" style={{ width: `${carrier.score}%` }} /></div>
@@ -536,7 +675,7 @@ function AppShell() {
           </div>
           <div className="fc-action-buttons">
             <button className="fc-button danger" data-testid="button-reject-load" disabled={selectedLoad.status !== 'pending'} onClick={() => moveLoad('rejected')}><X size={13} /> Reject load</button>
-            <button className="fc-button primary" data-testid="button-approve-load" disabled={selectedLoad.status !== 'pending'} onClick={() => moveLoad('approved')}><CheckCircle2 size={13} /> Approve & dispatch</button>
+            <button className="fc-button primary" data-testid="button-approve-load" disabled={selectedLoad.status !== 'pending'} onClick={() => moveLoad('approved')}><CheckCircle2 size={13} /> Approve &amp; dispatch</button>
           </div>
         </div>
       </section>
@@ -544,16 +683,16 @@ function AppShell() {
   }
 
   function renderOverview() {
-    const pendingLoads = pipelines.filter((load) => (load.status ?? 'pending') === 'pending');
-    const dispatchedCount = pipelines.filter((load) => (load.status ?? 'pending') === 'approved').length;
-    const averageConfidence = pipelines.length > 0 ? Math.round(pipelines.reduce((total, load) => total + (load.confidence ?? 0), 0) / pipelines.length) : 0;
+    const pendingLoads = loads.filter((load) => load.status === 'pending');
+    const dispatchedCount = loads.filter((load) => load.status === 'approved').length;
+    const averageConfidence = Math.round(loads.reduce((total, load) => total + load.confidence, 0) / loads.length);
 
     return (
       <>
         <div className="fc-metric-ribbon">
           <div className="fc-metric">
             <div><div className="fc-metric-label">Loads today</div><div className="fc-metric-note">Inbound freight · as of now</div></div>
-            <div className="fc-metric-value">{pipelines.length || 14}</div>
+            <div className="fc-metric-value">14</div>
             <div className="fc-metric-accent"><i style={{ height: '30%' }} /><i style={{ height: '47%' }} /><i style={{ height: '64%' }} /><i style={{ height: '81%' }} /><i style={{ height: '100%' }} /></div>
           </div>
           <div className="fc-metric">
@@ -583,12 +722,12 @@ function AppShell() {
                 >
                   <span className="fc-overview-load-main">
                     <span className="fc-load-id">{load.id}</span>
-                    <strong>{load.origin ?? '—'}, {load.originState ?? '—'} <ArrowRight size={11} /> {load.destination ?? '—'}, {load.destinationState ?? '—'}</strong>
-                    <small>{load.shipper ?? '—'} · {load.received ?? '—'}</small>
+                    <strong>{load.origin}, {load.originState} <ArrowRight size={11} /> {load.destination}, {load.destinationState}</strong>
+                    <small>{load.shipper} · {load.received}</small>
                   </span>
                   <span className="fc-overview-load-side">
-                    <span className="fc-load-rate">{money(load.rate ?? 0)}</span>
-                    {renderStatus(load.status ?? 'pending')}
+                    <span className="fc-load-rate">{money(load.rate)}</span>
+                    {renderStatus(load.status)}
                   </span>
                 </button>
               ))}
@@ -634,27 +773,17 @@ function AppShell() {
   }
 
   function renderBenchmarks() {
-    if (!pipelines.length) {
-      return (
-        <div className="fc-table-panel">
-          <div className="fc-panel-head"><span className="fc-panel-title">DAT lane benchmark monitor</span><span className="fc-panel-caption">NO DATA</span></div>
-          <div className="fc-history-empty"><BarChart3 size={24} /><div>No loads available for benchmarking.</div></div>
-        </div>
-      );
-    }
     return (
       <div className="fc-subpage-grid">
         <div className="fc-table-panel">
           <div className="fc-panel-head"><span className="fc-panel-title">DAT lane benchmark monitor</span><span className="fc-panel-caption">UPDATED 2 MIN AGO</span></div>
           <div className="fc-table-wrap">
             <table className="fc-table">
-              <thead><tr><th>Lane</th><th>Equipment</th><th>Market median</th><th>Active quote</th></tr></thead>
+              <thead><tr><th>Lane</th><th>Equipment</th><th>Market median</th><th>Active quote</th><th>Variance</th></tr></thead>
               <tbody>
-                {(pipelines ?? []).map((load) => {
-                  const benchmark = load.benchmark ?? 0;
-                  const variance = benchmark > 0 ? (((load.rate ?? 0) - benchmark) / benchmark) * 100 : 0;
-                  const varianceStr = Number.isFinite(variance) ? (variance >= 0 ? '+' : '') + variance.toFixed(1) + '%' : 'N/A';
-                  return <tr key={load.id} data-testid={`row-benchmark-${load.id}`}><td><strong>{load.origin ?? '—'}, {load.originState ?? '—'} <ArrowRight size={11} style={{ verticalAlign: 'middle', margin: '0 4px' }} /> {load.destination ?? '—'}, {load.destinationState ?? '—'}</strong></td><td>{load.equipment ?? '—'}</td><td className="mono">{money(load.benchmark ?? 0)}</td><td className="mono">{money(load.rate ?? 0)}</td><td className={variance >= 0 ? 'mono' : 'mono'} style={{ color: variance >= 0 ? '#86d2a3' : '#e0a96d' }}>{varianceStr}</td></tr>;
+                {loads.map((load) => {
+                  const variance = ((load.rate - load.benchmark) / load.benchmark) * 100;
+                  return <tr key={load.id} data-testid={`row-benchmark-${load.id}`}><td><strong>{load.origin}, {load.originState} <ArrowRight size={11} style={{ verticalAlign: 'middle', margin: '0 4px' }} /> {load.destination}, {load.destinationState}</strong></td><td>{load.equipment}</td><td className="mono">{money(load.benchmark)}</td><td className="mono">{money(load.rate)}</td><td className={variance >= 0 ? 'mono' : 'mono'} style={{ color: variance >= 0 ? '#86d2a3' : '#e0a96d' }}>{variance >= 0 ? '+' : ''}{variance.toFixed(1)}%</td></tr>;
                 })}
               </tbody>
             </table>
@@ -690,7 +819,7 @@ function AppShell() {
               <tbody>
                 {history.map((item) => (
                   <tr key={`${item.id}-${item.timestamp}`} data-testid={`row-history-${item.id}`}>
-                    <td className="mono">{item.id}</td><td><strong>{item.route}</strong></td><td>{renderStatus(item.status)}</td><td className="mono">{money(item.rate)}</td><td>{item.timestamp}</td><td><button className="fc-icon-button" data-testid={`button-history-reopen-${item.id}`} onClick={() => { const found = pipelines.find((load) => load.id === item.id); if (found) { setSelectedId(found.id); setSection('queue'); showToast(`${item.id} reopened in queue`); } else showToast('Archived load details are read-only'); }}><ChevronRight size={14} /></button></td>
+                    <td className="mono">{item.id}</td><td><strong>{item.route}</strong></td><td>{renderStatus(item.status)}</td><td className="mono">{money(item.rate)}</td><td>{item.timestamp}</td><td><button className="fc-icon-button" data-testid={`button-history-reopen-${item.id}`} onClick={() => { const found = loads.find((load) => load.id === item.id); if (found) { setSelectedId(found.id); setSection('queue'); showToast(`${item.id} reopened in queue`); } else showToast('Archived load details are read-only'); }}><ChevronRight size={14} /></button></td>
                   </tr>
                 ))}
               </tbody>
@@ -730,16 +859,12 @@ function AppShell() {
     settings: ['Settings', 'Tune the workspace to match your dispatch rhythm.'],
   };
 
-  const sseStatusIcon = sseStatus === 'connected' ? <Wifi size={14} /> : <WifiOff size={14} />;
-  const sseStatusText = sseStatus === 'connected' ? 'Live · SSE connected' : sseStatus === 'connecting' ? 'Reconnecting...' : 'Disconnected';
-
   return (
     <div className="fc-shell">
       <header className="fc-topbar">
-        <div className="fc-brand">
-          <div className="fc-mark"><img src={brandMarkSrc} alt="" /></div>
-          <span className="fc-brand-name">Freight Copilot</span>
-           <span className="fc-brand-kicker">CONTROL / 01</span>
+        <div className="fc-top-context">
+          <span className="fc-context-kicker">Freight operations</span>
+          <strong>{pageTitle[section][0]}</strong>
         </div>
         <label className="fc-top-search">
           <Search size={14} />
@@ -747,7 +872,7 @@ function AppShell() {
           <span className="fc-kbd">⌘ K</span>
         </label>
         <div className="fc-top-actions">
-          <div className="fc-live"><span className="fc-live-dot" /> {sseStatusText}</div>
+          <div className="fc-live"><span className="fc-live-dot" /> Live · SSE connected</div>
           <button className="fc-icon-button" data-testid="button-notifications" aria-label="Notifications" onClick={() => showToast('No new operations alerts')}><Bell size={15} /></button>
           <div className="fc-top-avatar" data-testid="avatar-operator">JD</div>
           <button className="fc-icon-button" data-testid="button-menu" aria-label="Open menu" onClick={() => showToast('Operator menu is ready') }><Menu size={17} /></button>
@@ -756,7 +881,10 @@ function AppShell() {
 
       <div className="fc-body">
         <aside className="fc-sidebar">
-          <div className="fc-rail-brand"><img src={brandMarkSrc} alt="Freight Copilot" /></div>
+          <div className="fc-rail-brand">
+            <div className="fc-rail-mark"><img src={brandMarkSrc} alt="" /></div>
+            <div className="fc-rail-copy"><strong>Freight Copilot</strong><small>Operations console</small></div>
+          </div>
           <div className="fc-nav-section">
             <div className="fc-nav-label">Workspace</div>
             {navItems.slice(0, 3).map((item) => {
@@ -808,7 +936,9 @@ function Router() {
   return (
     <RoutedErrorBoundary>
       <Switch>
-        <Route path="/" component={AppShell} />
+        <Route path="/" component={LoginPage} />
+        <Route path="/login" component={LoginPage} />
+        <Route path="/dashboard" component={AppShell} />
         <Route component={NotFound} />
       </Switch>
     </RoutedErrorBoundary>
@@ -833,5 +963,4 @@ function App() {
   );
 }
 
-export { AppShell };
 export default App;
