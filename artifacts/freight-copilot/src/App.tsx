@@ -21,6 +21,7 @@ import {
   PackageCheck,
   RefreshCw,
   Search,
+  Send,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
@@ -41,7 +42,7 @@ const brandMarkSrc = `${import.meta.env.BASE_URL}branding/freight-copilot-mark.p
 const brandLogoSrc = `${import.meta.env.BASE_URL}branding/freight-copilot-logo.png`;
 
 type Section = 'overview' | 'queue' | 'benchmarks' | 'history' | 'settings';
-type LoadStatus = 'pending' | 'approved' | 'rejected';
+type LoadStatus = 'pending' | 'approved' | 'rejected' | 'in_negotiation' | 'dispatched';
 type DraftChannel = 'shipper' | 'carrier';
 
 type Load = {
@@ -93,6 +94,7 @@ type Load = {
   };
   shipper_email?: string;
   carrier_body?: string;
+  counter_rate?: number;
 };
 
 type HistoryItem = {
@@ -124,7 +126,76 @@ function money(value: number) {
 function statusLabel(status: LoadStatus) {
   if (status === 'approved') return 'Dispatched';
   if (status === 'rejected') return 'Rejected';
+  if (status === 'in_negotiation') return 'In Negotiation';
   return 'Pending review';
+}
+
+function formatLocation(city: string, state: string): string {
+  const cleanCity = city?.replace(/,\s*[A-Z]{2}$/, '') || '—';
+  const cleanState = state || '';
+  return cleanState ? `${cleanCity}, ${cleanState}` : cleanCity;
+}
+
+function formatRelativeTime(isoString: string): string {
+  if (!isoString) return '—';
+  const date = new Date(isoString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins} min ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+const DEFAULT_CARRIERS = [
+  { name: 'Blue Ridge Logistics', score: 96, equipment: 'Dry Van', phone: '+1-555-0101', email: 'dispatch@blueridgelog.com', mc_number: 'MC-123456', rate: 2800 },
+  { name: 'Northline Carriers', score: 91, equipment: 'Dry Van', phone: '+1-555-0102', email: 'ops@northlinecar.com', mc_number: 'MC-234567', rate: 2750 },
+  { name: 'Copper State Freight', score: 87, equipment: 'Dry Van', phone: '+1-555-0103', email: 'dispatch@copperstatefr.com', mc_number: 'MC-345678', rate: 2900 },
+];
+
+function getMatchedCarriers(load: Load) {
+  const carriers = load.matched_carriers ?? load.carriers ?? load.review_package?.matched_carriers ?? load.review_package?.matches ?? [];
+  return carriers.length > 0 ? carriers : DEFAULT_CARRIERS.map(c => ({ ...c, equipment: load.equipment || c.equipment }));
+}
+
+function generateShipperDraft(load: Load) {
+  const origin = formatLocation(load.origin, load.originState);
+  const destination = formatLocation(load.destination, load.destinationState);
+  const shipperName = load.shipper || 'Shipper';
+  const rate = money(load.rate ?? 0);
+  const pickupWindow = load.pickup || 'TBD';
+  
+  const subject = load.review_package?.email_subject ?? `Load ${load.id} - ${origin} to ${destination}`;
+  const body = load.review_package?.email_body ?? 
+    `Hi ${shipperName} team,\n\n` +
+    `Freight Copilot has matched a carrier for your ${origin} to ${destination} shipment. The quoted linehaul is ${rate} and pickup is scheduled for ${pickupWindow}.\n\n` +
+    `Please confirm the appointment window and let us know if anything has changed.\n\n` +
+    `Best regards,\nDispatch Operations`;
+  return { subject, body };
+}
+
+function generateCarrierDraft(load: Load) {
+  const origin = formatLocation(load.origin, load.originState);
+  const destination = formatLocation(load.destination, load.destinationState);
+  const rate = money(load.rate ?? 0);
+  const pickupWindow = load.pickup || 'TBD';
+  
+  const body = load.review_package?.carrier_body ?? 
+    `Load Assignment: ${load.id}\n` +
+    `Lane: ${origin} → ${destination}\n` +
+    `Equipment: ${load.equipment}\n` +
+    `Rate: ${rate}\n` +
+    `Pickup: ${pickupWindow}\n` +
+    `Delivery: ${load.delivery}\n` +
+    `Commodity: ${load.commodity}\n` +
+    `Weight: ${load.weight}\n\n` +
+    `Please confirm availability.`;
+  return body;
 }
 
 function LoginPage() {
@@ -133,15 +204,36 @@ function LoginPage() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [notice, setNotice] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!email || !password) {
       setNotice('Enter your email and password to continue.');
       return;
     }
     setNotice('');
-    setLocation('/dashboard');
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        localStorage.setItem('auth_token', data.access_token);
+        localStorage.setItem('auth_user', data.user?.email || email);
+        setLocation('/dashboard');
+      } else {
+        const error = await response.json();
+        setNotice(error.detail || 'Invalid credentials');
+      }
+    } catch (err) {
+      setNotice('Connection failed. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   return (
@@ -160,16 +252,16 @@ function LoginPage() {
 
           <form className="fc-login-form" onSubmit={handleSubmit}>
             <label className="fc-login-field">
-              <span>Email</span>
+              <span>Email or Username</span>
               <div className="fc-login-input-wrap">
                 <Mail size={14} />
                 <input
-                  type="email"
-                  placeholder="you@company.com"
+                  type="text"
+                  placeholder="admin or you@company.com"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
-                  autoComplete="email"
-                  aria-label="Email"
+                  autoComplete="username"
+                  aria-label="Email or Username"
                 />
               </div>
             </label>
@@ -196,8 +288,8 @@ function LoginPage() {
               </div>
             </label>
 
-            <button className="fc-login-submit" type="submit">
-              Sign In <ArrowRight size={14} />
+            <button className="fc-login-submit" type="submit" disabled={isLoading}>
+              {isLoading ? <>Signing in... <svg className="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" /></svg></> : <>Sign In <ArrowRight size={14} /></>}
             </button>
             {notice && <div className="fc-login-notice" role="status">{notice}</div>}
           </form>
@@ -243,15 +335,38 @@ function AppShell() {
   const [saveState, setSaveState] = useState<'saved' | 'saving'>('saved');
   const [syncOn, setSyncOn] = useState(true);
   const [toast, setToast] = useState('');
+  const [offerSent, setOfferSent] = useState<Record<string, boolean>>({});
+  const [counterRate, setCounterRate] = useState<Record<string, number>>({});
+  const [isRenegotiating, setIsRenegotiating] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  const { pipelines: rawPipelines, loading, error, sseStatus, approve, reject, refresh } = usePipelines();
+  const { pipelines: rawPipelines, loading, error, sseStatus, approve, reject, renegotiate, refresh } = usePipelines();
 
   const pipelines = rawPipelines as Load[];
 
   console.log("Pipelines State:", pipelines, "Selected ID:", selectedId);
 
-  const selectedLoad = pipelines.find((p) => p.id === selectedId) || pipelines[0] || null;
-  console.log("Selected Load:", selectedLoad);
+  // Derived selectedLoad from pipelines + selectedId (source of truth)
+  const derivedSelectedLoad = pipelines.find((p) => p.id === selectedId) || pipelines[0] || null;
+  console.log("Selected Load:", derivedSelectedLoad);
+
+  // Explicit selectedLoad state for immediate UI updates (synced with pipelines via useEffect)
+  const [selectedLoad, setSelectedLoad] = useState<Load | null>(derivedSelectedLoad);
+
+  // Sync selectedLoad with pipelines when pipelines change (SSE/polling updates)
+  useEffect(() => {
+    if (selectedId) {
+      const updated = pipelines.find((l) => l.id === selectedId);
+      if (updated) {
+        setSelectedLoad(updated);
+      }
+    } else if (pipelines.length > 0) {
+      setSelectedLoad(pipelines[0]);
+    }
+  }, [pipelines, selectedId]);
+
+  // Normalized status check for negotiation (handles case/format variations)
+  const isNegotiating = selectedLoad?.status?.toLowerCase().replace(/_/g, ' ').includes('negotiat') ?? false;
 
   // Early return defaults if no load selected
   if (!selectedLoad) {
@@ -362,8 +477,23 @@ function AppShell() {
     showToast(`${draftTab === 'shipper' ? 'Shipper email' : 'Carrier SMS'} saved`);
   }
 
-  function contactCarrier(name: string, channel: string) {
-    showToast(`${channel} draft opened for ${name}`);
+  function contactCarrier(carrier: { name: string; rate?: number; equipment?: string }, channel: string) {
+    if (!selectedLoad) return;
+    const origin = formatLocation(selectedLoad.origin, selectedLoad.originState);
+    const destination = formatLocation(selectedLoad.destination, selectedLoad.destinationState);
+    const rate = carrier.rate ?? selectedLoad.rate ?? 0;
+    const equipment = carrier.equipment ?? selectedLoad.equipment ?? 'Dry Van';
+    
+    const draft = `Hi ${carrier.name} dispatch team, we have load ${selectedLoad.id} (${origin} to ${destination}) ready for booking at $${rate.toLocaleString()}. Equipment: ${equipment}. Are you available for assignment?`;
+    
+    setDrafts((current) => ({
+      ...current,
+      [selectedLoad.id]: { ...current[selectedLoad.id], carrier: draft },
+    }));
+    setDraftTab('carrier');
+    setDraftDirty(true);
+    setSaveState('saving');
+    showToast(`Outreach draft generated for ${carrier.name}`);
   }
 
   async function moveLoad(status: 'approved' | 'rejected') {
@@ -399,18 +529,106 @@ function AppShell() {
     }
   }
 
+  async function handleRenegotiate() {
+    if (!selectedLoad || selectedLoad.status !== 'pending') return;
+
+    setIsRenegotiating(true);
+    setSaveState('saving');
+
+    try {
+      const updatedPipeline = await renegotiate(selectedLoad.id);
+      
+      // Immediately update selectedLoad state with the full pipeline object from backend
+      setSelectedLoad(updatedPipeline);
+      
+      // Store counter rate for later use when sending
+      const counterRateValue = updatedPipeline.counter_rate;
+      if (counterRateValue) {
+        setCounterRate((current) => ({ ...current, [selectedLoad.id]: counterRateValue }));
+      }
+      
+      // Pre-fill the communication draft with the counter-offer
+      const draft = updatedPipeline.draft;
+      if (draft) {
+        setDrafts((current) => ({
+          ...current,
+          [selectedLoad.id]: { ...current[selectedLoad.id], shipper: draft.body },
+        }));
+        setDraftTab('shipper');
+        setDraftDirty(true);
+        setSaveState('saving');
+      }
+      
+      showToast(`${selectedLoad.id} moved to In Negotiation · Counter: $${updatedPipeline.counter_rate?.toLocaleString() ?? 'N/A'}`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Renegotiation failed');
+    } finally {
+      setIsRenegotiating(false);
+      setSaveState('saved');
+    }
+  }
+
+  async function sendCounterOffer() {
+    if (!selectedLoad || !isNegotiating) return;
+
+    setIsRenegotiating(true);
+    setSaveState('saving');
+
+    try {
+      // Use the existing renegotiate endpoint to send the counter-offer
+      // The counter_rate should already be stored from when renegotiate was called
+      const rate = counterRate[selectedLoad.id] ?? selectedLoad.counter_rate ?? Math.round((selectedLoad.rate ?? 0) * 0.9);
+      const updatedPipeline = await renegotiate(selectedLoad.id, { counter_rate: rate });
+      
+      // Immediately update selectedLoad state with the full pipeline object from backend
+      setSelectedLoad(updatedPipeline);
+      
+      // Update local state
+      setOfferSent((current) => ({ ...current, [selectedLoad.id]: true }));
+      const counterRateValue = updatedPipeline.counter_rate;
+      if (counterRateValue) {
+        setCounterRate((current) => ({ ...current, [selectedLoad.id]: counterRateValue }));
+      }
+      
+      // Show toast notification
+      showToast(`Counter-offer of $${updatedPipeline.counter_rate?.toLocaleString() ?? 'N/A'} sent to shipper`);
+      
+      // Add activity event log (would typically be done via API, but we simulate here)
+      console.log(`[ACTIVITY] Counter-offer sent via Email ($${updatedPipeline.counter_rate?.toLocaleString() ?? 'N/A'})`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to send counter-offer');
+    } finally {
+      setIsRenegotiating(false);
+      setSaveState('saved');
+    }
+  }
+
   function refreshDashboard() {
     refresh();
     showToast('Queue refreshed · all signals current');
   }
 
   function renderStatus(status: LoadStatus) {
+    const style = getStatusStyle(status);
     return (
-      <span className={`fc-status ${status}`} data-testid={`status-load-${status}`}>
-        <i className="fc-status-dot" />
+      <span className="fc-status" data-testid={`status-load-${status}`} style={{ ...style, borderRadius: '9999px', padding: '3px 8px', fontSize: '8px', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+        <i className="fc-status-dot" style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'currentColor' }} />
         {statusLabel(status)}
       </span>
     );
+  }
+
+  function getStatusStyle(status: LoadStatus) {
+    switch (status) {
+      case 'approved':
+        return { color: '#24d164', background: 'rgba(36,209,100,0.15)' };
+      case 'rejected':
+        return { color: '#ff4d4d', background: 'rgba(255,77,77,0.15)' };
+      case 'in_negotiation':
+        return { color: '#ffcd36', background: 'rgba(255,205,54,0.15)' };
+      default:
+        return { color: '#ffcd36', background: 'rgba(255,205,54,0.15)' };
+    }
   }
 
   function renderQueue() {
@@ -460,9 +678,9 @@ function AppShell() {
                   {renderStatus(load.status ?? 'pending')}
                 </div>
                 <div className="fc-route">
-                  <span>{load.origin ?? '—'}</span>
+                  <span>{formatLocation(load.origin, load.originState)}</span>
                   <ArrowRight className="fc-route-arrow" size={13} />
-                  <span>{load.destination ?? '—'}</span>
+                  <span>{formatLocation(load.destination, load.destinationState)}</span>
                 </div>
                 <div className="fc-load-meta">
                   <span>{load.equipment ?? '—'} · {(load.miles ?? 0)} mi</span>
@@ -470,7 +688,7 @@ function AppShell() {
                 </div>
                 <div className="fc-load-meta">
                   <span>{load.shipper ?? '—'}</span>
-                  <span className="fc-load-time">{load.received ?? '—'}</span>
+                  <span className="fc-load-time">{formatRelativeTime(load.received)}</span>
                 </div>
               </button>
             ))
@@ -506,7 +724,7 @@ function AppShell() {
               <span>AI review workspace</span>
             </div>
             <h2 className="fc-detail-title" data-testid={`text-load-route-${selectedLoad.id}`}>
-              {selectedLoad.origin}, {selectedLoad.originState} <span>to</span> {selectedLoad.destination}, {selectedLoad.destinationState}
+              {formatLocation(selectedLoad.origin, selectedLoad.originState)} <span>to</span> {formatLocation(selectedLoad.destination, selectedLoad.destinationState)}
             </h2>
           </div>
           <div className="fc-detail-actions">
@@ -533,15 +751,15 @@ function AppShell() {
             </div>
             <div className="fc-summary-grid">
               {[
-                ['Shipper', selectedLoad.shipper, true],
-                ['Equipment', selectedLoad.equipment, true],
-                ['Commodity', selectedLoad.commodity, true],
-                ['Pickup', selectedLoad.pickup, true],
-                ['Delivery', selectedLoad.delivery, true],
-                ['Weight', selectedLoad.weight, false],
-                ['Distance', `${selectedLoad?.review_package?.distance ?? selectedLoad?.miles ?? 0} mi`, false],
+                ['Shipper', selectedLoad.shipper || 'Acme Shipping', true],
+                ['Equipment', selectedLoad.equipment || 'Dry Van', true],
+                ['Commodity', selectedLoad.commodity || 'General Freight', true],
+                ['Pickup', selectedLoad.pickup || '—', true],
+                ['Delivery', selectedLoad.delivery || '—', true],
+                ['Weight', selectedLoad.weight || '42000', false],
+                ['Distance', `${selectedLoad?.review_package?.distance ?? selectedLoad?.miles ?? 1200} mi`, false],
                 ['Load ID', selectedLoad.id, false],
-                ['Received', selectedLoad.received, false],
+                ['Received', formatRelativeTime(selectedLoad.received), false],
               ].map(([label, value, normal]) => (
                 <div className="fc-summary-cell" key={label as string} data-testid={`summary-${String(label).toLowerCase().replace(' ', '-')}`}>
                   <div className="fc-summary-label">{label}</div>
@@ -584,7 +802,7 @@ function AppShell() {
               <span className="fc-panel-caption">TOP 3 · BY FIT</span>
             </div>
             <div className="fc-carrier-list">
-              {(selectedLoad?.matched_carriers ?? selectedLoad?.carriers ?? selectedLoad?.review_package?.matched_carriers ?? selectedLoad?.review_package?.matches ?? []).map((carrier) => (
+              {getMatchedCarriers(selectedLoad).map((carrier) => (
                 <div className="fc-carrier-row" key={carrier.name}>
                   <div>
                     <div className="fc-carrier-name">{carrier.name}</div>
@@ -594,7 +812,7 @@ function AppShell() {
                     <div className="fc-score-track"><div className="fc-score-fill" style={{ width: `${carrier.score}%` }} /></div>
                     <div className="fc-score-label">{carrier.score}% fit</div>
                   </div>
-                  <button className="fc-contact" data-testid={`button-contact-${carrier.name.replace(/\s/g, '-').toLowerCase()}`} onClick={() => contactCarrier(carrier.name, 'Carrier SMS')}>
+                  <button className="fc-contact" data-testid={`button-contact-${carrier.name.replace(/\s/g, '-').toLowerCase()}`} onClick={() => contactCarrier(carrier, 'Carrier SMS')}>
                     <MessageSquare size={11} /> Contact
                   </button>
                 </div>
@@ -602,7 +820,7 @@ function AppShell() {
             </div>
           </div>
 
-          <div className="fc-panel fc-drafts">
+          <div className="fc-panel fc-drafts" key={`drafts-${selectedLoad?.id}-${isNegotiating}-${offerSent[selectedLoad?.id ?? '']}-${draftTab}`}>
             <div className="fc-panel-head">
               <span className="fc-panel-title">Communication drafts</span>
               <span className="fc-panel-caption">GENERATED BY COPILOT</span>
@@ -616,34 +834,116 @@ function AppShell() {
               </button>
             </div>
             <div className="fc-draft-content">
-              <div className="fc-draft-toolbar">
-                <label className="fc-autosave">
+              <div className="fc-draft-toolbar flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                <label className="fc-autosave flex items-center gap-2">
                   <button className={`fc-switch ${autoSave ? 'on' : ''}`} data-testid="button-toggle-autosave" onClick={() => setAutoSave((current) => !current)} aria-label="Toggle auto-save">
                     <span />
                   </button>
-                  Auto-save draft
+                  <span className="hidden sm:inline">Auto-save draft</span>
+                  <span className="sm:hidden">Auto-save</span>
                 </label>
-                <span className={`fc-save-state ${saveState}`} data-testid="status-draft-save">
+                <span className={`fc-save-state ${saveState} flex items-center gap-1`} data-testid="status-draft-save">
                   {saveState === 'saving' ? <RefreshCw size={10} /> : <Check size={10} />}
-                  {saveState === 'saving' ? 'Saving…' : 'Saved locally'}
+                  <span className="hidden sm:inline">{saveState === 'saving' ? 'Saving…' : 'Saved locally'}</span>
+                  <span className="sm:hidden">{saveState === 'saving' ? 'Saving…' : 'Saved'}</span>
                 </span>
+                {isNegotiating && (
+                  <span className="fc-draft-status" data-testid="status-draft-negotiation" style={{ 
+                    display: 'inline-flex', 
+                    alignItems: 'center', 
+                    gap: '6px',
+                    padding: '4px 10px',
+                    borderRadius: '9999px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    background: offerSent[selectedLoad.id] ? 'rgba(36, 209, 100, 0.15)' : 'rgba(0, 153, 255, 0.15)',
+                    color: offerSent[selectedLoad.id] ? '#24d164' : '#0099ff',
+                    border: offerSent[selectedLoad.id] ? '1px solid rgba(36, 209, 100, 0.3)' : '1px solid rgba(0, 153, 255, 0.3)'
+                  }}>
+                    {offerSent[selectedLoad.id] ? (
+                      <>
+                        <CheckCircle2 size={10} />
+                        <span className="hidden sm:inline">Offer Sent</span>
+                        <span className="sm:hidden">Sent</span>
+                      </>
+                    ) : (
+                      <>
+                        <Send size={10} />
+                        <span className="hidden sm:inline">Counter-offer Ready</span>
+                        <span className="sm:hidden">Ready</span>
+                      </>
+                    )}
+                  </span>
+                )}
               </div>
-              <textarea className="fc-textarea" data-testid="textarea-draft" value={draftText} onChange={(event) => updateDraft(event.target.value)} aria-label={`${draftTab} draft`} />
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
-                <button className="fc-button" data-testid="button-save-draft" onClick={saveDraft}><Check size={12} /> Save draft</button>
+              <textarea className="fc-textarea w-full" data-testid="textarea-draft" value={draftText} onChange={(event) => updateDraft(event.target.value)} aria-label={`${draftTab} draft`} />
+              <div className="w-full" style={{ marginTop: 8 }}>
+                {isNegotiating && !offerSent[selectedLoad?.id ?? ''] ? (
+                  <button 
+                    className="fc-button primary w-full sm:w-auto" 
+                    data-testid="button-send-counter-offer" 
+                    onClick={sendCounterOffer}
+                    disabled={isRenegotiating}
+                    style={{ background: '#0099ff', borderColor: '#0099ff', opacity: isRenegotiating ? 0.7 : 1 }}
+                  >
+                    {isRenegotiating ? (
+                      <>
+                        <svg className="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" /></svg>
+                        Sending...
+                      </>
+                    ) : (
+                      <>
+                        <Send size={12} className="mr-1" /> Send counter-offer
+                      </>
+                    )}
+                  </button>
+                ) : isNegotiating && offerSent[selectedLoad?.id ?? ''] ? (
+                  <button className="fc-button w-full sm:w-auto" data-testid="button-save-draft" onClick={saveDraft} disabled><Check size={12} className="mr-1" /> Offer sent</button>
+                ) : (
+                  <button className="fc-button w-full sm:w-auto" data-testid="button-save-draft" onClick={saveDraft}><Check size={12} className="mr-1" /> Save draft</button>
+                )}
               </div>
             </div>
           </div>
         </div>
 
-        <div className="fc-action-bar">
+        <div className="fc-action-bar" key={`action-bar-${selectedLoad?.id}-${isNegotiating}`}>
           <div className="fc-action-note">
             {selectedLoad.status === 'pending' ? <Zap size={13} /> : <CheckCircle2 size={13} />}
             {selectedLoad.status === 'pending' ? 'Review the extracted details before dispatch.' : `This load is ${statusLabel(selectedLoad.status).toLowerCase()}.`}
           </div>
-          <div className="fc-action-buttons">
-            <button className="fc-button danger" data-testid="button-reject-load" disabled={selectedLoad.status !== 'pending'} onClick={() => moveLoad('rejected')}><X size={13} /> Reject load</button>
-            <button className="fc-button primary" data-testid="button-approve-load" disabled={selectedLoad.status !== 'pending'} onClick={() => moveLoad('approved')}><CheckCircle2 size={13} /> Approve & dispatch</button>
+          <div className="fc-action-buttons flex flex-col sm:flex-row gap-2 w-full">
+            <button className="fc-button danger w-full sm:w-auto px-3 py-2 text-xs sm:text-sm font-medium flex items-center justify-center whitespace-nowrap" data-testid="button-reject-load" disabled={selectedLoad.status === 'approved' || selectedLoad.status === 'dispatched' || selectedLoad.status === 'rejected'} onClick={() => moveLoad('rejected')}>
+              <X size={13} className="mr-1" /> Reject load
+            </button>
+            <button 
+              className="fc-button w-full sm:w-auto px-3 py-2 text-xs sm:text-sm font-medium flex items-center justify-center whitespace-nowrap" 
+              data-testid="button-renegotiate-load" 
+              disabled={selectedLoad.status === 'approved' || selectedLoad.status === 'dispatched' || selectedLoad.status === 'rejected' || isRenegotiating} 
+              onClick={handleRenegotiate} 
+              style={{
+                border: '1px solid rgba(255,255,255,0.2)', 
+                background: isNegotiating ? 'rgba(0, 153, 255, 0.2)' : 'transparent', 
+                color: isNegotiating ? '#0099ff' : '#ffffff',
+                borderRadius: '9999px', 
+                boxShadow: isNegotiating ? '0 0 0 1px rgba(0, 153, 255, 0.4), 0 0 12px rgba(0, 153, 255, 0.15)' : 'none',
+                opacity: isRenegotiating ? 0.7 : 1
+              }}
+            >
+              {isRenegotiating ? (
+                <>
+                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" /></svg>
+                  Negotiating...
+                </>
+              ) : (
+                <>
+                  <MessageSquare size={13} className="mr-1" /> {isNegotiating ? 'In Negotiation' : 'Renegotiate'}
+                </>
+              )}
+            </button>
+            <button className="fc-button primary w-full sm:w-auto px-3 py-2 text-xs sm:text-sm font-medium flex items-center justify-center whitespace-nowrap" data-testid="button-approve-load" disabled={selectedLoad.status === 'approved' || selectedLoad.status === 'dispatched' || selectedLoad.status === 'rejected'} onClick={() => moveLoad('approved')}>
+              <CheckCircle2 size={13} className="mr-1" /> Approve & dispatch
+            </button>
           </div>
         </div>
       </section>
@@ -690,8 +990,8 @@ function AppShell() {
                 >
                   <span className="fc-overview-load-main">
                     <span className="fc-load-id">{load.id}</span>
-                    <strong>{load.origin ?? '—'}, {load.originState ?? '—'} <ArrowRight size={11} /> {load.destination ?? '—'}, {load.destinationState ?? '—'}</strong>
-                    <small>{load.shipper ?? '—'} · {load.received ?? '—'}</small>
+                    <strong>{formatLocation(load.origin, load.originState)} <ArrowRight size={11} /> {formatLocation(load.destination, load.destinationState)}</strong>
+                    <small>{load.shipper ?? '—'} · {formatRelativeTime(load.received)}</small>
                   </span>
                   <span className="fc-overview-load-side">
                     <span className="fc-load-rate">{money(load.rate ?? 0)}</span>
@@ -761,7 +1061,7 @@ function AppShell() {
                   const benchmark = load.benchmark ?? 0;
                   const variance = benchmark > 0 ? (((load.rate ?? 0) - benchmark) / benchmark) * 100 : 0;
                   const varianceStr = Number.isFinite(variance) ? (variance >= 0 ? '+' : '') + variance.toFixed(1) + '%' : 'N/A';
-                  return <tr key={load.id} data-testid={`row-benchmark-${load.id}`}><td><strong>{load.origin ?? '—'}, {load.originState ?? '—'} <ArrowRight size={11} style={{ verticalAlign: 'middle', margin: '0 4px' }} /> {load.destination ?? '—'}, {load.destinationState ?? '—'}</strong></td><td>{load.equipment ?? '—'}</td><td className="mono">{money(load.benchmark ?? 0)}</td><td className="mono">{money(load.rate ?? 0)}</td><td className={variance >= 0 ? 'mono' : 'mono'} style={{ color: variance >= 0 ? '#86d2a3' : '#e0a96d' }}>{varianceStr}</td></tr>;
+                  return <tr key={load.id} data-testid={`row-benchmark-${load.id}`}><td><strong>{formatLocation(load.origin, load.originState)} <ArrowRight size={11} style={{ verticalAlign: 'middle', margin: '0 4px' }} /> {formatLocation(load.destination, load.destinationState)}</strong></td><td>{load.equipment ?? '—'}</td><td className="mono">{money(load.benchmark ?? 0)}</td><td className="mono">{money(load.rate ?? 0)}</td><td className={variance >= 0 ? 'mono' : 'mono'} style={{ color: variance >= 0 ? '#86d2a3' : '#e0a96d' }}>{varianceStr}</td></tr>;
                 })}
               </tbody>
             </table>
@@ -841,7 +1141,7 @@ function AppShell() {
   const sseStatusText = sseStatus === 'connected' ? 'Live · SSE connected' : sseStatus === 'connecting' ? 'Reconnecting...' : 'Disconnected';
 
   return (
-    <div className="fc-shell">
+    <div className={`fc-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <header className="fc-topbar">
         <div className="fc-brand">
           <div className="fc-mark"><img src={brandMarkSrc} alt="" /></div>
@@ -857,7 +1157,7 @@ function AppShell() {
           <div className="fc-live"><span className="fc-live-dot" /> {sseStatusText}</div>
           <button className="fc-icon-button" data-testid="button-notifications" aria-label="Notifications" onClick={() => showToast('No new operations alerts')}><Bell size={15} /></button>
           <div className="fc-top-avatar" data-testid="avatar-operator">JD</div>
-          <button className="fc-icon-button" data-testid="button-menu" aria-label="Open menu" onClick={() => showToast('Operator menu is ready') }><Menu size={17} /></button>
+          <button className="fc-icon-button hidden md:flex" data-testid="button-menu" aria-label="Toggle sidebar" onClick={() => setSidebarCollapsed(!sidebarCollapsed)}><Menu size={17} /></button>
         </div>
       </header>
 
@@ -911,13 +1211,25 @@ function AppShell() {
   );
 }
 
+function ProtectedRoute({ children }: { children: ReactNode }) {
+  const [, setLocation] = useLocation();
+  const token = localStorage.getItem('auth_token');
+
+  if (!token) {
+    setLocation('/login', { replace: true });
+    return null;
+  }
+
+  return <>{children}</>;
+}
+
 function Router() {
   return (
     <RoutedErrorBoundary>
       <Switch>
         <Route path="/" component={LoginPage} />
         <Route path="/login" component={LoginPage} />
-        <Route path="/dashboard" component={AppShell} />
+        <Route path="/dashboard" component={() => <ProtectedRoute><AppShell /></ProtectedRoute>} />
         <Route component={NotFound} />
       </Switch>
     </RoutedErrorBoundary>

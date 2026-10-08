@@ -3,8 +3,10 @@ import {
   fetchPipelines,
   approvePipeline,
   rejectPipeline,
+  renegotiatePipeline,
   createSSEConnection,
   type Pipeline,
+  type Load,
   type ApprovePayload,
   type SSEEvent,
 } from '@/lib/api';
@@ -34,7 +36,7 @@ function normalizePipeline(item: any): Pipeline {
     pickup: reviewPackage.pickup || item.pickup || '',
     delivery: reviewPackage.delivery || item.delivery || '',
     received: reviewPackage.received || item.received || '',
-    status: (reviewPackage.status || item.status || 'pending') as 'pending' | 'approved' | 'rejected',
+    status: (reviewPackage.status || item.status || 'pending') as 'pending' | 'approved' | 'rejected' | 'in_negotiation',
     carriers: reviewPackage.matched_carriers || item.carriers || [],
     review_summary: reviewPackage.review_summary || item.review_summary || {},
     drafts: reviewPackage.drafts || item.drafts || {},
@@ -68,51 +70,79 @@ export function usePipelines() {
     }
   }, []);
 
+  const handleNewLoad = useCallback((event: SSEEvent) => {
+    if (event.pipeline_id && event.summary) {
+      const normalized = normalizePipeline({
+        pipeline_id: event.pipeline_id,
+        review_package: event.summary,
+      });
+      setPipelines((prev) => {
+        if (prev.some((p) => p.id === normalized.id)) return prev;
+        return [normalized, ...prev];
+      });
+    } else {
+      // Fallback: if event is malformed, do a one-time refetch
+      loadPipelines();
+    }
+  }, [loadPipelines]);
+
+  const handleApproved = useCallback((event: SSEEvent) => {
+    if (event.pipeline_id) {
+      setPipelines((prev) => prev.filter((p) => p.id !== event.pipeline_id));
+    }
+  }, []);
+
+  const handleRejected = useCallback((event: SSEEvent) => {
+    if (event.pipeline_id) {
+      setPipelines((prev) => prev.filter((p) => p.id !== event.pipeline_id));
+    }
+  }, []);
+
+  const handleRenegotiated = useCallback((event: SSEEvent) => {
+    if (event.pipeline_id) {
+      setPipelines((prev) =>
+        prev.map((p) =>
+          p.id === event.pipeline_id
+            ? { ...p, status: 'in_negotiation' as const, counter_rate: event.counter_rate, draft: event.draft }
+            : p
+        )
+      );
+    }
+  }, []);
+
+  const handleReconnectFetch = useCallback(() => {
+    if (isMountedRef.current) {
+      loadPipelines();
+    }
+  }, [loadPipelines]);
+
   useEffect(() => {
     isMountedRef.current = true;
     loadPipelines();
 
-    const interval = setInterval(loadPipelines, 30000);
+    // NO polling interval - SSE handles real-time updates
+    // const interval = setInterval(loadPipelines, 30000); // REMOVED
 
     cleanupRef.current = createSSEConnection({
-      onNewLoad: (event: SSEEvent) => {
-        if (event.pipeline_id && event.summary) {
-          const normalized = normalizePipeline({
-            pipeline_id: event.pipeline_id,
-            review_package: event.summary,
-          });
-          setPipelines((prev) => {
-            if (prev.some((p) => p.id === normalized.id)) return prev;
-            return [normalized, ...prev];
-          });
-        } else {
-          loadPipelines();
-        }
-      },
-      onApproved: (event: SSEEvent) => {
-        if (event.pipeline_id) {
-          setPipelines((prev) => prev.filter((p) => p.id !== event.pipeline_id));
-        }
-      },
-      onRejected: (event: SSEEvent) => {
-        if (event.pipeline_id) {
-          setPipelines((prev) => prev.filter((p) => p.id !== event.pipeline_id));
-        }
-      },
+      onNewLoad: handleNewLoad,
+      onApproved: handleApproved,
+      onRejected: handleRejected,
+      onRenegotiated: handleRenegotiated,
       onStatusChange: (status: SSEStatus) => {
         if (isMountedRef.current) {
           setSseStatus(status);
         }
       },
+      onReconnectFetch: handleReconnectFetch,
     });
 
     return () => {
       isMountedRef.current = false;
-      clearInterval(interval);
+      // clearInterval(interval); // REMOVED - no interval to clear
       cleanupRef.current?.();
       cleanupRef.current = null;
     };
-  }, [loadPipelines]);
+  }, [loadPipelines, handleNewLoad, handleApproved, handleRejected, handleRenegotiated, handleReconnectFetch]);
 
   const approve = useCallback(
     async (pipelineId: string, drafts: ApprovePayload) => {
@@ -144,6 +174,25 @@ export function usePipelines() {
     []
   );
 
+  const renegotiate = useCallback(
+    async (pipelineId: string, payload?: { counter_rate?: number; notes?: string }) => {
+      try {
+        const updatedPipeline = await renegotiatePipeline(pipelineId, payload);
+        setPipelines((prev) =>
+          prev.map((p) =>
+            p.id === pipelineId ? updatedPipeline : p
+          )
+        );
+        return updatedPipeline;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to renegotiate';
+        setError(message);
+        throw err;
+      }
+    },
+    []
+  );
+
   return {
     pipelines,
     loading,
@@ -151,6 +200,7 @@ export function usePipelines() {
     sseStatus,
     approve,
     reject,
+    renegotiate,
     refresh: loadPipelines,
   };
 }

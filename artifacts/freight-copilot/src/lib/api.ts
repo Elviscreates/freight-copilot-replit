@@ -1,4 +1,12 @@
-const BASE = 'http://localhost:8000';
+const BASE = '';
+
+function getAuthHeaders(): HeadersInit {
+  const token = localStorage.getItem('auth_token');
+  return {
+    'Content-Type': 'application/json',
+    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+  };
+}
 
 export interface Pipeline {
   id: string;
@@ -18,11 +26,15 @@ export interface Pipeline {
   pickup: string;
   delivery: string;
   received: string;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'in_negotiation' | 'dispatched';
   carriers: Array<{ name: string; score: number; equipment: string; phone: string; email?: string }>;
   review_summary: ReviewSummary;
+  counter_rate?: number;
+  draft?: { subject: string; body: string };
   [key: string]: unknown;
 }
+
+export type Load = Pipeline;
 
 export interface ReviewSummary {
   shipper_email?: string;
@@ -42,7 +54,9 @@ export interface FetchPipelinesResponse {
 }
 
 export async function fetchPipelines(): Promise<FetchPipelinesResponse> {
-  const response = await fetch(`${BASE}/api/pipelines`);
+  const response = await fetch(`${BASE}/api/pipelines`, {
+    headers: getAuthHeaders(),
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch pipelines: ${response.statusText}`);
   }
@@ -63,7 +77,7 @@ export async function approvePipeline(
 ): Promise<{ status: string; pipeline_id: string }> {
   const response = await fetch(`${BASE}/api/pipelines/${pipelineId}/approve`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders(),
     body: JSON.stringify(drafts),
   });
   if (!response.ok) {
@@ -76,7 +90,7 @@ export async function approvePipeline(
 export async function rejectPipeline(pipelineId: string): Promise<{ status: string; pipeline_id: string }> {
   const response = await fetch(`${BASE}/api/pipelines/${pipelineId}/reject`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders(),
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -85,12 +99,30 @@ export async function rejectPipeline(pipelineId: string): Promise<{ status: stri
   return response.json();
 }
 
-export type SSEEventType = 'connected' | 'new_load' | 'approved' | 'rejected' | 'status';
+export async function renegotiatePipeline(
+  pipelineId: string,
+  payload?: { counter_rate?: number; notes?: string }
+): Promise<Load> {
+  const response = await fetch(`${BASE}/api/pipelines/${pipelineId}/renegotiate`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload || {}),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail || 'Failed to renegotiate pipeline');
+  }
+  return response.json();
+}
+
+export type SSEEventType = 'connected' | 'new_load' | 'approved' | 'rejected' | 'renegotiated' | 'status';
 
 export interface SSEEvent {
   type: SSEEventType;
   pipeline_id?: string;
   summary?: ReviewSummary;
+  counter_rate?: number;
+  draft?: { subject: string; body: string };
   [key: string]: unknown;
 }
 
@@ -98,47 +130,79 @@ export type SSECallbacks = {
   onNewLoad?: (event: SSEEvent) => void;
   onApproved?: (event: SSEEvent) => void;
   onRejected?: (event: SSEEvent) => void;
-  onStatusChange?: (status: 'connected' | 'disconnected' | 'error') => void;
+  onRenegotiated?: (event: SSEEvent) => void;
+  onStatusChange?: (status: 'connected' | 'disconnected' | 'error' | 'connecting') => void;
+  onReconnectFetch?: () => void;
 };
 
 export function createSSEConnection(callbacks: SSECallbacks): () => void {
-  const es = new EventSource(`${BASE}/api/stream`);
+  let reconnectAttempt = 0;
+  let es: EventSource | null = null;
+  let isIntentionalClose = false;
 
-  es.onopen = () => {
-    callbacks.onStatusChange?.('connected');
-  };
+  const connect = () => {
+    if (isIntentionalClose) return;
+    
+    const token = localStorage.getItem('auth_token');
+    const url = token ? `/api/stream?token=${encodeURIComponent(token)}` : '/api/stream';
+    
+    callbacks.onStatusChange?.('connecting');
+    es = new EventSource(url);
 
-  es.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data) as SSEEvent;
-      switch (data.type) {
-        case 'new_load':
-          callbacks.onNewLoad?.(data);
-          break;
-        case 'approved':
-          callbacks.onApproved?.(data);
-          break;
-        case 'rejected':
-          callbacks.onRejected?.(data);
-          break;
-        case 'connected':
-          callbacks.onStatusChange?.('connected');
-          break;
-        default:
-          break;
+    es.onopen = () => {
+      reconnectAttempt = 0;
+      callbacks.onStatusChange?.('connected');
+      // Trigger pipeline refetch on successful reconnect
+      callbacks.onReconnectFetch?.();
+    };
+
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as SSEEvent;
+        switch (data.type) {
+          case 'new_load':
+            callbacks.onNewLoad?.(data);
+            break;
+          case 'approved':
+            callbacks.onApproved?.(data);
+            break;
+          case 'rejected':
+            callbacks.onRejected?.(data);
+            break;
+          case 'renegotiated':
+            callbacks.onRenegotiated?.(data);
+            break;
+          case 'connected':
+            callbacks.onStatusChange?.('connected');
+            break;
+          default:
+            break;
+        }
+      } catch {
+        // Ignore parse errors for non-JSON messages (e.g., heartbeat pings)
       }
-    } catch {
-      // Ignore parse errors for non-JSON messages (e.g., heartbeat pings)
-    }
+    };
+
+    es.onerror = () => {
+      callbacks.onStatusChange?.('error');
+      es?.close();
+      
+      if (isIntentionalClose) return;
+
+      // Exponential backoff: 1s, 2s, 4s, 8s, 16s, max 30s
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempt), 30000);
+      reconnectAttempt++;
+      
+      console.log(`[SSE] Connection lost. Reconnecting in ${delay}ms (attempt ${reconnectAttempt})...`);
+      setTimeout(connect, delay);
+    };
   };
 
-  es.onerror = () => {
-    callbacks.onStatusChange?.('error');
-    es.close();
-  };
+  connect();
 
   return () => {
+    isIntentionalClose = true;
     callbacks.onStatusChange?.('disconnected');
-    es.close();
+    es?.close();
   };
 }
