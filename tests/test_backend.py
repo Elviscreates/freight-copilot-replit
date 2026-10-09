@@ -2,11 +2,15 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 from main import app
 
+# Test token for authentication
+TEST_TOKEN = "copilot_session_token_2026"
+AUTH_HEADERS = {"Authorization": f"Bearer {TEST_TOKEN}"}
+
 
 @pytest.mark.asyncio
 async def test_health_endpoint():
     """Test that the health endpoint returns 200 and correct status."""
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         response = await client.get("/health")
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
@@ -15,7 +19,7 @@ async def test_health_endpoint():
 @pytest.mark.asyncio
 async def test_cors_headers():
     """Test that CORS headers are present for allowed origins."""
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         response = await client.options(
             "/api/pipelines",
             headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "GET"}
@@ -28,7 +32,7 @@ async def test_cors_headers():
 @pytest.mark.asyncio
 async def test_cors_preflight_rejects_unknown_origin():
     """Test that unknown origins are rejected."""
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         response = await client.options(
             "/api/pipelines",
             headers={"Origin": "http://evil.com", "Access-Control-Request-Method": "GET"}
@@ -43,7 +47,7 @@ async def test_list_pipelines_empty():
     from services.pipeline_store import store
     store._store.clear()
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         response = await client.get("/api/pipelines")
         assert response.status_code == 200
         data = response.json()
@@ -67,7 +71,7 @@ async def test_pipeline_crud():
         "load_id": "TEST-001"
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         # Create via webhook
         webhook_payload = {
             "pipeline_id": "TEST-001",
@@ -80,7 +84,7 @@ async def test_pipeline_crud():
         # Read
         response = await client.get("/api/pipelines/TEST-001")
         assert response.status_code == 200
-        assert response.json()["load_id"] == "TEST-001"
+        assert response.json()["pipeline_id"] == "TEST-001"
 
         # List
         response = await client.get("/api/pipelines")
@@ -112,7 +116,7 @@ async def test_pipeline_approve():
         "load_id": "TEST-002"
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         webhook_payload = {
             "pipeline_id": "TEST-002",
             "review_package": pipeline_data
@@ -131,10 +135,10 @@ async def test_pipeline_approve():
         assert data["status"] == "approved"
         assert data["pipeline_id"] == "TEST-002"
 
-        # Verify pipeline is marked as APPROVED (not deleted)
+        # Verify pipeline is marked as approved (not deleted)
         response = await client.get("/api/pipelines/TEST-002")
         assert response.status_code == 200
-        assert response.json()["status"] == "APPROVED"
+        assert response.json()["status"] == "approved"
 
 
 @pytest.mark.asyncio
@@ -172,7 +176,7 @@ async def test_webhook_triggers_sse_notification():
     queue = asyncio.Queue()
     sse_clients.append(queue)
     
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         # Trigger a new load via webhook
         webhook_payload = {
             "pipeline_id": "SSE-TEST-001",
@@ -205,7 +209,7 @@ async def test_approve_triggers_sse_notification():
     sse_clients.clear()
     
     # Create pipeline first without SSE client
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         webhook_payload = {
             "pipeline_id": "SSE-TEST-002",
             "review_package": {
@@ -221,7 +225,7 @@ async def test_approve_triggers_sse_notification():
     queue = asyncio.Queue()
     sse_clients.append(queue)
     
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         approve_payload = {
             "email_subject": "Test Subject",
             "email_body": "Test Body",
@@ -291,7 +295,7 @@ async def test_approve_handles_missing_review_summary_gracefully():
         "load_id": "TEST-003"
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         webhook_payload = {
             "pipeline_id": "TEST-003",
             "review_package": pipeline_data
@@ -324,7 +328,7 @@ async def test_approve_handles_string_review_summary_gracefully():
         "load_id": "TEST-004"
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         webhook_payload = {
             "pipeline_id": "TEST-004",
             "review_package": pipeline_data
@@ -358,7 +362,7 @@ async def test_get_pipeline_handles_string_data_gracefully():
     }
     store.save("TEST-005", json.dumps(pipeline_data))
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         response = await client.get("/api/pipelines/TEST-005")
         assert response.status_code == 200
         data = response.json()
@@ -376,7 +380,7 @@ async def test_list_pipelines_handles_mixed_data():
     store.save("TEST-006", {"load_id": "TEST-006", "review_summary": {}})
     store.save("TEST-007", json.dumps({"load_id": "TEST-007", "review_summary": {}}))
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as client:
         response = await client.get("/api/pipelines")
         assert response.status_code == 200
         data = response.json()

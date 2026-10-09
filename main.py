@@ -190,7 +190,8 @@ async def approve_pipeline(pipeline_id: str, payload: ApprovePayload, token: str
     print(f"[DISPATCH] Sent email to shipper: {shipper_email}")
     print(f"[DISPATCH] Sent email to carrier: {carrier_email}")
     
-    await notify_clients({"type": "approved", "pipeline_id": pipeline_id})
+    # Broadcast FULL updated pipeline via SSE for real-time sync across all clients
+    await notify_clients({"type": "approved", "pipeline_id": pipeline_id, "pipeline": pipeline})
 
     return {
         "status": "approved",
@@ -205,8 +206,17 @@ async def reject_pipeline(pipeline_id: str, token: str = Depends(verify_auth)) -
         print(f"[WARN] Pipeline {pipeline_id} not found for reject - nothing to delete")
         return {"status": "rejected", "pipeline_id": pipeline_id, "note": "Pipeline was not found"}
 
+    if isinstance(pipeline, str):
+        pipeline = safe_dict(pipeline)
+
+    # Store pipeline data before deletion for SSE broadcast
+    rejected_pipeline = dict(pipeline)
+    rejected_pipeline["status"] = "rejected"
+    rejected_pipeline["rejected_at"] = datetime.now(timezone.utc).isoformat()
+    
     store.delete(pipeline_id)
-    await notify_clients({"type": "rejected", "pipeline_id": pipeline_id})
+    # Broadcast FULL rejected pipeline via SSE for real-time sync
+    await notify_clients({"type": "rejected", "pipeline_id": pipeline_id, "pipeline": rejected_pipeline})
 
     return {"status": "rejected", "pipeline_id": pipeline_id}
 
@@ -266,11 +276,13 @@ async def renegotiate_pipeline(pipeline_id: str, payload: RenegotiatePayload, to
 
     print(f"[RENEGOTIATE] Pipeline {pipeline_id} moved to In Negotiation with counter-offer ${counter_rate:,}")
 
+    # Broadcast FULL updated pipeline via SSE for real-time sync
     await notify_clients({
         "type": "renegotiated",
         "pipeline_id": pipeline_id,
         "counter_rate": counter_rate,
-        "draft": {"subject": counter_subject, "body": counter_body}
+        "draft": {"subject": counter_subject, "body": counter_body},
+        "pipeline": pipeline
     })
 
     return {

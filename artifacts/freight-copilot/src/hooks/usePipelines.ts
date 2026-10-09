@@ -88,25 +88,49 @@ export function usePipelines() {
 
   const handleApproved = useCallback((event: SSEEvent) => {
     if (event.pipeline_id) {
-      setPipelines((prev) => prev.filter((p) => p.id !== event.pipeline_id));
+      // If backend sends full pipeline, use it (normalize for type safety); otherwise fall back to filtering
+      if (event.pipeline) {
+        const normalized = normalizePipeline(event.pipeline);
+        setPipelines((prev) =>
+          prev.map((p) => (p.id === event.pipeline_id ? normalized : p))
+        );
+      } else {
+        setPipelines((prev) => prev.filter((p) => p.id !== event.pipeline_id));
+      }
     }
   }, []);
 
   const handleRejected = useCallback((event: SSEEvent) => {
     if (event.pipeline_id) {
-      setPipelines((prev) => prev.filter((p) => p.id !== event.pipeline_id));
+      // If backend sends full pipeline (with status: rejected), update it; otherwise filter out
+      if (event.pipeline) {
+        const normalized = normalizePipeline(event.pipeline);
+        setPipelines((prev) =>
+          prev.map((p) => (p.id === event.pipeline_id ? normalized : p))
+        );
+      } else {
+        setPipelines((prev) => prev.filter((p) => p.id !== event.pipeline_id));
+      }
     }
   }, []);
 
   const handleRenegotiated = useCallback((event: SSEEvent) => {
     if (event.pipeline_id) {
-      setPipelines((prev) =>
-        prev.map((p) =>
-          p.id === event.pipeline_id
-            ? { ...p, status: 'in_negotiation' as const, counter_rate: event.counter_rate, draft: event.draft }
-            : p
-        )
-      );
+      // If backend sends full pipeline, use it; otherwise merge partial update
+      if (event.pipeline) {
+        const normalized = normalizePipeline(event.pipeline);
+        setPipelines((prev) =>
+          prev.map((p) => (p.id === event.pipeline_id ? normalized : p))
+        );
+      } else {
+        setPipelines((prev) =>
+          prev.map((p) =>
+            p.id === event.pipeline_id
+              ? { ...p, status: 'in_negotiation' as const, counter_rate: event.counter_rate, draft: event.draft }
+              : p
+          )
+        );
+      }
     }
   }, []);
 
@@ -148,7 +172,7 @@ export function usePipelines() {
     async (pipelineId: string, drafts: ApprovePayload) => {
       try {
         await approvePipeline(pipelineId, drafts);
-        setPipelines((prev) => prev.filter((p) => p.id !== pipelineId));
+        // State will be updated via SSE event (broadcasts full pipeline with status: approved)
         return true;
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to approve';
@@ -163,7 +187,7 @@ export function usePipelines() {
     async (pipelineId: string) => {
       try {
         await rejectPipeline(pipelineId);
-        setPipelines((prev) => prev.filter((p) => p.id !== pipelineId));
+        // State will be updated via SSE event (broadcasts full pipeline with status: rejected)
         return true;
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to reject';
@@ -178,11 +202,8 @@ export function usePipelines() {
     async (pipelineId: string, payload?: { counter_rate?: number; notes?: string }) => {
       try {
         const updatedPipeline = await renegotiatePipeline(pipelineId, payload);
-        setPipelines((prev) =>
-          prev.map((p) =>
-            p.id === pipelineId ? updatedPipeline : p
-          )
-        );
+        // State will be updated via SSE event (broadcasts full pipeline with status: in_negotiation)
+        // Return the pipeline for any immediate UI needs (e.g., pre-filling drafts)
         return updatedPipeline;
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to renegotiate';

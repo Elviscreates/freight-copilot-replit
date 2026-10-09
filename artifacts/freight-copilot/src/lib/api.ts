@@ -123,6 +123,7 @@ export interface SSEEvent {
   summary?: ReviewSummary;
   counter_rate?: number;
   draft?: { subject: string; body: string };
+  pipeline?: Pipeline;
   [key: string]: unknown;
 }
 

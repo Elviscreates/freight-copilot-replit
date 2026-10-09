@@ -65,12 +65,21 @@ vi.mock('@/lib/api', () => {
     },
   ];
 
+  let sseCallbacks: any = {};
+
   return {
     fetchPipelines: vi.fn().mockResolvedValue({ pipelines: mockPipelines, count: mockPipelines.length }),
     fetchHealth: vi.fn().mockResolvedValue({ status: 'ok' }),
     approvePipeline: vi.fn().mockResolvedValue({ status: 'approved', pipeline_id: 'FC-2048' }),
-    rejectPipeline: vi.fn().mockResolvedValue({ status: 'rejected', pipeline_id: 'FC-2048' }),
+    rejectPipeline: vi.fn().mockImplementation(async (pipelineId: string) => {
+      // Simulate SSE event for reject
+      if (sseCallbacks.onRejected) {
+        sseCallbacks.onRejected({ type: 'rejected', pipeline_id: pipelineId });
+      }
+      return { status: 'rejected', pipeline_id: pipelineId };
+    }),
     createSSEConnection: vi.fn((callbacks) => {
+      sseCallbacks = callbacks;
       callbacks.onStatusChange?.('connected');
       return () => callbacks.onStatusChange?.('disconnected');
     }),
