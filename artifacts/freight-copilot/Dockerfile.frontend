@@ -1,0 +1,45 @@
+# Frontend Dockerfile - Multi-stage build (pnpm workspace)
+# Stage 1: Build stage
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy pnpm workspace files from root
+COPY pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY tsconfig.base.json ./
+
+# Copy workspace packages needed by frontend
+COPY lib/api-client-react ./lib/api-client-react/
+COPY artifacts/freight-copilot ./artifacts/freight-copilot/
+
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Install dependencies (workspace root) - includes frontend package.json
+RUN pnpm install && pnpm add -w @rollup/rollup-linux-x64-musl@4.63.1 lightningcss-linux-x64-musl@1.32.0 @tailwindcss/oxide-linux-x64-musl@4.3.3
+
+# Build the application (set production env vars)
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV BASE_PATH=/
+WORKDIR /app/artifacts/freight-copilot
+RUN pnpm run build
+
+# Stage 2: Production Nginx stage
+FROM nginx:alpine AS runner
+
+# Copy custom nginx configuration
+COPY artifacts/freight-copilot/nginx.conf /etc/nginx/nginx.conf
+
+# Copy built assets from builder stage
+COPY --from=builder /app/artifacts/freight-copilot/dist/public /usr/share/nginx/html
+
+# Expose port
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
+
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]

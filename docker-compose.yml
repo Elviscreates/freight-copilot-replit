@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: freight-copilot-backend
+    restart: unless-stopped
+    environment:
+      - DASHBOARD_USER=${DASHBOARD_USER:-admin}
+      - DASHBOARD_PASS=${DASHBOARD_PASS:-copilot2026!}
+      - PORT=8000
+      - PYTHONPATH=/app
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - freight-network
+    volumes:
+      - backend-logs:/app/logs
+
+  frontend:
+    build:
+      context: .
+      dockerfile: artifacts/freight-copilot/Dockerfile.frontend
+    container_name: freight-copilot-frontend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - BASE_PATH=/
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - freight-network
+
+networks:
+  freight-network:
+    driver: bridge
+
+volumes:
+  backend-logs:
+    driver: local
