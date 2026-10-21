@@ -1,16 +1,64 @@
 import json
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Depends, status
+from fastapi import FastAPI, HTTPException, Request, Depends, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 from services.pipeline_store import store
+from services.ai_negotiator import AINegotiatorService, CarrierBidRequest, NegotiationResponse
+
+
+# JWT Authentication Configuration
+JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-in-production")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRY_HOURS = 24
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+bearer_scheme = HTTPBearer()
+
+def create_token(username: str) -> str:
+    expire = datetime.utcnow() + timedelta(hours=JWT_EXPIRY_HOURS)
+    return jwt.encode(
+        {"sub": username, "exp": expire},
+        JWT_SECRET,
+        algorithm=JWT_ALGORITHM
+    )
+
+def verify_token(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
+):
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM]
+        )
+        if payload.get("sub") is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return payload
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+def verify_token_from_query(token: str = Query(...)):
+    try:
+        payload = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM]
+        )
+        if payload.get("sub") is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return payload
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 def safe_dict(val):
@@ -30,7 +78,7 @@ app = FastAPI(title="Freight Copilot API")
 
 # Auth configuration
 DASHBOARD_USER = os.getenv("DASHBOARD_USER", "admin")
-DASHBOARD_PASS = os.getenv("DASHBOARD_PASS", "copilot2026!")
+DASHBOARD_PASS = os.getenv("DASHBOARD_PASS", "admin123")
 security = HTTPBearer(auto_error=False)
 
 
@@ -74,6 +122,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.post("/auth/login")
+async def auth_login(request: Request):
+    body = await request.json()
+    expected_user = os.environ.get("AUTH_USERNAME", "admin")
+    expected_pass = os.environ.get("AUTH_PASSWORD", "admin123")
+    if body.get("username") != expected_user or body.get("password") != expected_pass:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password"
+        )
+    return {
+        "token": create_token(expected_user),
+        "expires_in": JWT_EXPIRY_HOURS * 3600
+    }
+
+
 sse_clients: List[asyncio.Queue] = []
 
 
@@ -116,7 +181,7 @@ async def send_email(to: str, subject: str, body: str) -> bool:
 
 
 @app.get("/api/pipelines")
-async def list_pipelines(token: str = Depends(verify_auth)) -> Dict[str, Any]:
+async def list_pipelines(_: dict = Depends(verify_token)) -> Dict[str, Any]:
     all_pipelines = store.get_all()
     pipelines = []
     for p in all_pipelines.values():
@@ -130,7 +195,7 @@ async def list_pipelines(token: str = Depends(verify_auth)) -> Dict[str, Any]:
 
 
 @app.get("/api/pipelines/{pipeline_id}")
-async def get_pipeline(pipeline_id: str, token: str = Depends(verify_auth)) -> Dict[str, Any]:
+async def get_pipeline(pipeline_id: str, _: dict = Depends(verify_token)) -> Dict[str, Any]:
     pipeline = store.get(pipeline_id)
     if pipeline is None:
         raise HTTPException(status_code=404, detail="Pipeline not found")
@@ -140,7 +205,7 @@ async def get_pipeline(pipeline_id: str, token: str = Depends(verify_auth)) -> D
 
 
 @app.post("/api/pipelines/{pipeline_id}/approve")
-async def approve_pipeline(pipeline_id: str, payload: ApprovePayload, token: str = Depends(verify_auth)) -> Dict[str, Any]:
+async def approve_pipeline(pipeline_id: str, payload: ApprovePayload, _: dict = Depends(verify_token)) -> Dict[str, Any]:
     pipeline = store.get(pipeline_id)
     if pipeline is None:
         print(f"[WARN] Pipeline {pipeline_id} not found for approve - creating minimal record")
@@ -200,7 +265,7 @@ async def approve_pipeline(pipeline_id: str, payload: ApprovePayload, token: str
 
 
 @app.post("/api/pipelines/{pipeline_id}/reject")
-async def reject_pipeline(pipeline_id: str, token: str = Depends(verify_auth)) -> Dict[str, Any]:
+async def reject_pipeline(pipeline_id: str, _: dict = Depends(verify_token)) -> Dict[str, Any]:
     pipeline = store.get(pipeline_id)
     if pipeline is None:
         print(f"[WARN] Pipeline {pipeline_id} not found for reject - nothing to delete")
@@ -222,7 +287,7 @@ async def reject_pipeline(pipeline_id: str, token: str = Depends(verify_auth)) -
 
 
 @app.post("/api/pipelines/{pipeline_id}/renegotiate")
-async def renegotiate_pipeline(pipeline_id: str, payload: RenegotiatePayload, token: str = Depends(verify_auth)) -> Dict[str, Any]:
+async def renegotiate_pipeline(pipeline_id: str, payload: RenegotiatePayload, _: dict = Depends(verify_token)) -> Dict[str, Any]:
     pipeline = store.get(pipeline_id)
     if pipeline is None:
         print(f"[WARN] Pipeline {pipeline_id} not found for renegotiate - creating minimal record")
@@ -309,7 +374,7 @@ async def event_generator() -> Any:
 
 
 @app.get("/api/stream")
-async def stream_events(request: Request) -> StreamingResponse:
+async def stream_events(request: Request, _: dict = Depends(verify_token_from_query)) -> StreamingResponse:
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
@@ -408,7 +473,26 @@ async def webhook_load_tender(request: Request) -> Dict[str, Any]:
     await notify_clients({
         "type": "new_load",
         "pipeline_id": pipeline_id,
+        "pipeline": pipeline,
         "summary": {
+            "origin": pipeline.get("origin", ""),
+            "destination": pipeline.get("destination", ""),
+            "origin_state": pipeline.get("originState", ""),
+            "destination_state": pipeline.get("destinationState", ""),
+            "equipment": pipeline.get("equipment", ""),
+            "rate": pipeline.get("rate", 0),
+            "benchmark": pipeline.get("benchmark", 0),
+            "margin": pipeline.get("margin", 0),
+            "confidence": pipeline.get("confidence", 0),
+            "weight": pipeline.get("weight", ""),
+            "miles": pipeline.get("miles", 0),
+            "commodity": pipeline.get("commodity", ""),
+            "shipper": pipeline.get("shipper", ""),
+            "pickup": pipeline.get("pickup", ""),
+            "delivery": pipeline.get("delivery", ""),
+            "received": pipeline.get("received", ""),
+            "review_summary": pipeline.get("review_summary", {}),
+            "drafts": pipeline.get("drafts", {}),
             "matched_carriers": pipeline.get("matched_carriers", []),
             "dat_benchmark": pipeline.get("dat_benchmark", {"median_rate": 2450}),
             "ai_confidence": pipeline.get("ai_confidence", 94),
@@ -421,6 +505,246 @@ async def webhook_load_tender(request: Request) -> Dict[str, Any]:
     })
 
     return {"status": "received", "pipeline_id": pipeline_id}
+
+
+@app.post("/api/copilot/negotiate")
+async def negotiate_rate(request: CarrierBidRequest, _: dict = Depends(verify_token)) -> NegotiationResponse:
+    """AI Copilot endpoint for carrier rate negotiation.
+    
+    Evaluates a carrier's bid against DAT market benchmarks and returns
+    a structured recommendation: ACCEPT, COUNTER, or REJECT with rationale.
+    """
+    result = AINegotiatorService.evaluate(request)
+    
+    # Log the negotiation for audit trail
+    print(f"[COPILOT] Negotiation for {request.carrier_name} on {request.lane_origin}→{request.lane_destination}: "
+          f"Bid=${request.bid_rate:,.2f}, Median=${result.market_median:,.2f}, Decision={result.decision}")
+    
+    return result
+
+
+@app.post("/api/loads/seed")
+async def seed_demo_loads() -> Dict[str, Any]:
+    """Seed 5 demo inbound loads into the pipeline queue for testing."""
+    from datetime import datetime, timezone, timedelta
+    
+    demo_loads = [
+        {
+            "pipeline_id": "FC-3001",
+            "review_package": {
+                "load_id": "FC-3001",
+                "origin": "Atlanta, GA",
+                "destination": "Chicago, IL",
+                "origin_state": "GA",
+                "destination_state": "IL",
+                "equipment": "Dry Van",
+                "rate": 3200,
+                "dat_benchmark": {"median_rate": 3050},
+                "margin": 4.9,
+                "confidence": 94,
+                "weight": "42800",
+                "miles": 716,
+                "commodity": "Packaged foods",
+                "shipper": "Pine & Rail Foods",
+                "pickup": "2024-05-21T08:00:00",
+                "delivery": "2024-05-22T14:00:00",
+                "received": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+                "review_summary": {
+                    "shipper_email": "shipper@pinerail.com",
+                    "carrier_contacts": [{"email": "dispatch@blueridgelog.com", "name": "Blue Ridge Logistics"}]
+                },
+                "matched_carriers": [
+                    {"name": "Blue Ridge Logistics", "score": 96, "equipment": "Dry Van", "phone": "+1-555-0101", "email": "dispatch@blueridgelog.com", "mc_number": "MC-123456"},
+                    {"name": "Northline Carriers", "score": 91, "equipment": "Dry Van", "phone": "+1-555-0102", "email": "ops@northlinecar.com", "mc_number": "MC-234567"},
+                ],
+                "drafts": {
+                    "shipper_email": {"body": "Hi Pine & Rail team, Freight Copilot has matched a carrier for your Atlanta to Chicago shipment..."},
+                    "carrier_outreach": {"body": "Load Assignment: FC-3001\nLane: Atlanta, GA → Chicago, IL\nEquipment: Dry Van\nRate: $3,200"}
+                },
+                "email_body": "Hi Pine & Rail team, Freight Copilot has matched a carrier for your Atlanta to Chicago shipment...",
+                "email_subject": "Load FC-3001 - Atlanta, GA to Chicago, IL",
+                "carrier_body": "Load Assignment: FC-3001\nLane: Atlanta, GA → Chicago, IL\nEquipment: Dry Van\nRate: $3,200",
+                "distance": 716,
+            }
+        },
+        {
+            "pipeline_id": "FC-3002",
+            "review_package": {
+                "load_id": "FC-3002",
+                "origin": "Dallas, TX",
+                "destination": "Phoenix, AZ",
+                "origin_state": "TX",
+                "destination_state": "AZ",
+                "equipment": "Reefer",
+                "rate": 3800,
+                "dat_benchmark": {"median_rate": 3500},
+                "margin": 8.6,
+                "confidence": 91,
+                "weight": "38500",
+                "miles": 885,
+                "commodity": "Fresh produce",
+                "shipper": "Texas Fresh Co.",
+                "pickup": "2024-05-21T13:00:00",
+                "delivery": "2024-05-23T09:00:00",
+                "received": (datetime.now(timezone.utc) - timedelta(minutes=12)).isoformat(),
+                "review_summary": {
+                    "shipper_email": "shipper@texasfresh.com",
+                    "carrier_contacts": [{"email": "dispatch@desertline.com", "name": "Desert Linehaul"}]
+                },
+                "matched_carriers": [
+                    {"name": "Desert Linehaul", "score": 92, "equipment": "Reefer", "phone": "+1-555-0103", "email": "dispatch@desertline.com", "mc_number": "MC-345678"},
+                    {"name": "Sunbelt Refrigerated", "score": 88, "equipment": "Reefer", "phone": "+1-555-0104", "email": "ops@sunbeltreefer.com", "mc_number": "MC-456789"},
+                ],
+                "drafts": {
+                    "shipper_email": {"body": "Hi Texas Fresh team, Freight Copilot has matched a reefer carrier for your Dallas to Phoenix shipment..."},
+                    "carrier_outreach": {"body": "Load Assignment: FC-3002\nLane: Dallas, TX → Phoenix, AZ\nEquipment: Reefer\nRate: $3,800"}
+                },
+                "email_body": "Hi Texas Fresh team, Freight Copilot has matched a reefer carrier for your Dallas to Phoenix shipment...",
+                "email_subject": "Load FC-3002 - Dallas, TX to Phoenix, AZ",
+                "carrier_body": "Load Assignment: FC-3002\nLane: Dallas, TX → Phoenix, AZ\nEquipment: Reefer\nRate: $3,800",
+                "distance": 885,
+            }
+        },
+        {
+            "pipeline_id": "FC-3003",
+            "review_package": {
+                "load_id": "FC-3003",
+                "origin": "Los Angeles, CA",
+                "destination": "Denver, CO",
+                "origin_state": "CA",
+                "destination_state": "CO",
+                "equipment": "Flatbed",
+                "rate": 4200,
+                "dat_benchmark": {"median_rate": 3950},
+                "margin": 6.3,
+                "confidence": 89,
+                "weight": "45000",
+                "miles": 830,
+                "commodity": "Steel coils",
+                "shipper": "West Coast Metals",
+                "pickup": "2024-05-22T07:00:00",
+                "delivery": "2024-05-23T16:00:00",
+                "received": (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat(),
+                "review_summary": {
+                    "shipper_email": "shipper@westcoastmetals.com",
+                    "carrier_contacts": [{"email": "dispatch@mountainfreight.com", "name": "Mountain Freight"}]
+                },
+                "matched_carriers": [
+                    {"name": "Mountain Freight", "score": 94, "equipment": "Flatbed", "phone": "+1-555-0105", "email": "dispatch@mountainfreight.com", "mc_number": "MC-567890"},
+                    {"name": "Rocky Mountain Haulers", "score": 87, "equipment": "Flatbed", "phone": "+1-555-0106", "email": "ops@rockymountain.com", "mc_number": "MC-678901"},
+                ],
+                "drafts": {
+                    "shipper_email": {"body": "Hi West Coast Metals team, Freight Copilot has matched a flatbed carrier for your LA to Denver steel shipment..."},
+                    "carrier_outreach": {"body": "Load Assignment: FC-3003\nLane: Los Angeles, CA → Denver, CO\nEquipment: Flatbed\nRate: $4,200"}
+                },
+                "email_body": "Hi West Coast Metals team, Freight Copilot has matched a flatbed carrier for your LA to Denver steel shipment...",
+                "email_subject": "Load FC-3003 - Los Angeles, CA to Denver, CO",
+                "carrier_body": "Load Assignment: FC-3003\nLane: Los Angeles, CA → Denver, CO\nEquipment: Flatbed\nRate: $4,200",
+                "distance": 830,
+            }
+        },
+        {
+            "pipeline_id": "FC-3004",
+            "review_package": {
+                "load_id": "FC-3004",
+                "origin": "Charlotte, NC",
+                "destination": "Memphis, TN",
+                "origin_state": "NC",
+                "destination_state": "TN",
+                "equipment": "Dry Van",
+                "rate": 1850,
+                "dat_benchmark": {"median_rate": 1750},
+                "margin": 5.7,
+                "confidence": 93,
+                "weight": "39200",
+                "miles": 560,
+                "commodity": "Textiles",
+                "shipper": "Carolina Textiles",
+                "pickup": "2024-05-22T09:00:00",
+                "delivery": "2024-05-22T20:00:00",
+                "received": (datetime.now(timezone.utc) - timedelta(minutes=35)).isoformat(),
+                "review_summary": {
+                    "shipper_email": "shipper@carolinatextiles.com",
+                    "carrier_contacts": [{"email": "dispatch@southernlogistics.com", "name": "Southern Logistics"}]
+                },
+                "matched_carriers": [
+                    {"name": "Southern Logistics", "score": 95, "equipment": "Dry Van", "phone": "+1-555-0107", "email": "dispatch@southernlogistics.com", "mc_number": "MC-789012"},
+                    {"name": "Delta Carriers", "score": 89, "equipment": "Dry Van", "phone": "+1-555-0108", "email": "ops@deltacarriers.com", "mc_number": "MC-890123"},
+                ],
+                "drafts": {
+                    "shipper_email": {"body": "Hi Carolina Textiles team, Freight Copilot has matched a carrier for your Charlotte to Memphis textile shipment..."},
+                    "carrier_outreach": {"body": "Load Assignment: FC-3004\nLane: Charlotte, NC → Memphis, TN\nEquipment: Dry Van\nRate: $1,850"}
+                },
+                "email_body": "Hi Carolina Textiles team, Freight Copilot has matched a carrier for your Charlotte to Memphis textile shipment...",
+                "email_subject": "Load FC-3004 - Charlotte, NC to Memphis, TN",
+                "carrier_body": "Load Assignment: FC-3004\nLane: Charlotte, NC → Memphis, TN\nEquipment: Dry Van\nRate: $1,850",
+                "distance": 560,
+            }
+        },
+        {
+            "pipeline_id": "FC-3005",
+            "review_package": {
+                "load_id": "FC-3005",
+                "origin": "Seattle, WA",
+                "destination": "Salt Lake City, UT",
+                "origin_state": "WA",
+                "destination_state": "UT",
+                "equipment": "Reefer",
+                "rate": 4100,
+                "dat_benchmark": {"median_rate": 3800},
+                "margin": 7.9,
+                "confidence": 90,
+                "weight": "41000",
+                "miles": 835,
+                "commodity": "Frozen seafood",
+                "shipper": "Pacific Seafood Co.",
+                "pickup": "2024-05-22T06:00:00",
+                "delivery": "2024-05-24T12:00:00",
+                "received": (datetime.now(timezone.utc) - timedelta(minutes=48)).isoformat(),
+                "review_summary": {
+                    "shipper_email": "shipper@pacificseafood.com",
+                    "carrier_contacts": [{"email": "dispatch@northwestreefer.com", "name": "Northwest Refrigerated"}]
+                },
+                "matched_carriers": [
+                    {"name": "Northwest Refrigerated", "score": 93, "equipment": "Reefer", "phone": "+1-555-0109", "email": "dispatch@northwestreefer.com", "mc_number": "MC-901234"},
+                    {"name": "Cascade Cold Chain", "score": 86, "equipment": "Reefer", "phone": "+1-555-0110", "email": "ops@cascadecold.com", "mc_number": "MC-012345"},
+                ],
+                "drafts": {
+                    "shipper_email": {"body": "Hi Pacific Seafood team, Freight Copilot has matched a reefer carrier for your Seattle to Salt Lake City frozen seafood shipment..."},
+                    "carrier_outreach": {"body": "Load Assignment: FC-3005\nLane: Seattle, WA → Salt Lake City, UT\nEquipment: Reefer\nRate: $4,100"}
+                },
+                "email_body": "Hi Pacific Seafood team, Freight Copilot has matched a reefer carrier for your Seattle to Salt Lake City frozen seafood shipment...",
+                "email_subject": "Load FC-3005 - Seattle, WA to Salt Lake City, UT",
+                "carrier_body": "Load Assignment: FC-3005\nLane: Seattle, WA → Salt Lake City, UT\nEquipment: Reefer\nRate: $4,100",
+                "distance": 835,
+            }
+        },
+    ]
+    
+    created = []
+    for load in demo_loads:
+        pipeline = create_pipeline_record(load["pipeline_id"], load["review_package"])
+        store.save(load["pipeline_id"], pipeline)
+        created.append(load["pipeline_id"])
+        
+        # Broadcast new_load SSE event for real-time UI update
+        await notify_clients({
+            "type": "new_load",
+            "pipeline_id": load["pipeline_id"],
+            "summary": {
+                "matched_carriers": pipeline.get("matched_carriers", []),
+                "dat_benchmark": pipeline.get("dat_benchmark", {"median_rate": 2450}),
+                "ai_confidence": pipeline.get("ai_confidence", 94),
+                "shipper_email": pipeline.get("shipper_email", ""),
+                "email_subject": pipeline.get("review_package", {}).get("email_subject", ""),
+                "email_body": pipeline.get("review_package", {}).get("email_body", ""),
+                "carrier_body": pipeline.get("review_package", {}).get("carrier_body", ""),
+                "distance": pipeline.get("miles", 0),
+            }
+        })
+    
+    print(f"[SEED] Created {len(created)} demo loads: {created}")
+    return {"status": "seeded", "count": len(created), "pipeline_ids": created}
 
 
 @app.get("/health")

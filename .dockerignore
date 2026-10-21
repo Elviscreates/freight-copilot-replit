@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+**/__pycache__
+**/*.log
+**/.env
+**/.env.*
+repomix-output.xml

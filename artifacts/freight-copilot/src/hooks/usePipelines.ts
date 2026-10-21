@@ -4,10 +4,14 @@ import {
   approvePipeline,
   rejectPipeline,
   renegotiatePipeline,
+  negotiateRate,
+  seedDemoLoads,
   createSSEConnection,
   type Pipeline,
   type Load,
   type ApprovePayload,
+  type CarrierBidRequest,
+  type NegotiationResponse,
   type SSEEvent,
 } from '@/lib/api';
 
@@ -214,6 +218,31 @@ export function usePipelines() {
     []
   );
 
+  const negotiate = useCallback(
+    async (request: CarrierBidRequest): Promise<NegotiationResponse> => {
+      try {
+        const result = await negotiateRate(request);
+        return result;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to negotiate';
+        setError(message);
+        throw err;
+      }
+    },
+    []
+  );
+
+  const seed = useCallback(async () => {
+    try {
+      const result = await seedDemoLoads();
+      return result;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to seed demo loads';
+      setError(message);
+      throw err;
+    }
+  }, []);
+
   return {
     pipelines,
     loading,
@@ -222,6 +251,8 @@ export function usePipelines() {
     approve,
     reject,
     renegotiate,
+    negotiate,
+    seed,
     refresh: loadPipelines,
   };
 }

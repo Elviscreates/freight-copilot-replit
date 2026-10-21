@@ -1,10 +1,12 @@
+import { getToken, clearToken } from "./auth";
+
 const BASE = '';
 
-function getAuthHeaders(): HeadersInit {
-  const token = localStorage.getItem('auth_token');
+function authHeaders(): Record<string, string> {
+  const token = getToken();
   return {
-    'Content-Type': 'application/json',
-    ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
 
@@ -48,6 +50,33 @@ export interface ApprovePayload {
   carrier_body: string;
 }
 
+export interface CarrierBidRequest {
+  carrier_name: string;
+  bid_rate: number;
+  equipment_type: "Dry Van" | "Reefer" | "Flatbed";
+  lane_origin: string;
+  lane_destination: string;
+  miles: number;
+  weight?: number;
+  commodity?: string;
+  carrier_score?: number;
+  fuel_surcharge?: number;
+}
+
+export interface NegotiationResponse {
+  decision: "ACCEPT" | "COUNTER" | "REJECT";
+  recommended_rate: number;
+  market_median: number;
+  carrier_bid: number;
+  variance_pct: number;
+  confidence: number;
+  rationale: string;
+  savings_vs_bid: number;
+  equipment_type: string;
+  lane: string;
+  factors: Record<string, unknown>;
+}
+
 export interface FetchPipelinesResponse {
   pipelines: Pipeline[];
   count: number;
@@ -55,8 +84,13 @@ export interface FetchPipelinesResponse {
 
 export async function fetchPipelines(): Promise<FetchPipelinesResponse> {
   const response = await fetch(`${BASE}/api/pipelines`, {
-    headers: getAuthHeaders(),
+    headers: authHeaders(),
   });
+  if (response.status === 401) {
+    clearToken();
+    window.location.reload();
+    return { pipelines: [], count: 0 };
+  }
   if (!response.ok) {
     throw new Error(`Failed to fetch pipelines: ${response.statusText}`);
   }
@@ -65,6 +99,11 @@ export async function fetchPipelines(): Promise<FetchPipelinesResponse> {
 
 export async function fetchHealth(): Promise<{ status: string }> {
   const response = await fetch(`${BASE}/health`);
+  if (response.status === 401) {
+    clearToken();
+    window.location.reload();
+    return { status: "error" };
+  }
   if (!response.ok) {
     throw new Error(`Health check failed: ${response.statusText}`);
   }
@@ -77,9 +116,14 @@ export async function approvePipeline(
 ): Promise<{ status: string; pipeline_id: string }> {
   const response = await fetch(`${BASE}/api/pipelines/${pipelineId}/approve`, {
     method: 'POST',
-    headers: getAuthHeaders(),
+    headers: authHeaders(),
     body: JSON.stringify(drafts),
   });
+  if (response.status === 401) {
+    clearToken();
+    window.location.reload();
+    return { status: "error", pipeline_id: pipelineId };
+  }
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
     throw new Error(error.detail || 'Failed to approve pipeline');
@@ -90,8 +134,13 @@ export async function approvePipeline(
 export async function rejectPipeline(pipelineId: string): Promise<{ status: string; pipeline_id: string }> {
   const response = await fetch(`${BASE}/api/pipelines/${pipelineId}/reject`, {
     method: 'POST',
-    headers: getAuthHeaders(),
+    headers: authHeaders(),
   });
+  if (response.status === 401) {
+    clearToken();
+    window.location.reload();
+    return { status: "error", pipeline_id: pipelineId };
+  }
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
     throw new Error(error.detail || 'Failed to reject pipeline');
@@ -105,12 +154,54 @@ export async function renegotiatePipeline(
 ): Promise<Load> {
   const response = await fetch(`${BASE}/api/pipelines/${pipelineId}/renegotiate`, {
     method: 'POST',
-    headers: getAuthHeaders(),
+    headers: authHeaders(),
     body: JSON.stringify(payload || {}),
   });
+  if (response.status === 401) {
+    clearToken();
+    window.location.reload();
+    return {} as Load;
+  }
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
     throw new Error(error.detail || 'Failed to renegotiate pipeline');
+  }
+  return response.json();
+}
+
+export async function negotiateRate(
+  request: CarrierBidRequest
+): Promise<NegotiationResponse> {
+  const response = await fetch(`${BASE}/api/copilot/negotiate`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(request),
+  });
+  if (response.status === 401) {
+    clearToken();
+    window.location.reload();
+    return { decision: "REJECT", recommended_rate: 0, market_median: 0, carrier_bid: 0, variance_pct: 0, confidence: 0, rationale: "", savings_vs_bid: 0, equipment_type: "", lane: "", factors: {} };
+  }
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail || 'Failed to negotiate rate');
+  }
+  return response.json();
+}
+
+export async function seedDemoLoads(): Promise<{ status: string; count: number; pipeline_ids: string[] }> {
+  const response = await fetch(`${BASE}/api/loads/seed`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (response.status === 401) {
+    clearToken();
+    window.location.reload();
+    return { status: "error", count: 0, pipeline_ids: [] };
+  }
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(error.detail || 'Failed to seed demo loads');
   }
   return response.json();
 }
@@ -144,7 +235,7 @@ export function createSSEConnection(callbacks: SSECallbacks): () => void {
   const connect = () => {
     if (isIntentionalClose) return;
     
-    const token = localStorage.getItem('auth_token');
+    const token = getToken();
     const url = token ? `/api/stream?token=${encodeURIComponent(token)}` : '/api/stream';
     
     callbacks.onStatusChange?.('connecting');

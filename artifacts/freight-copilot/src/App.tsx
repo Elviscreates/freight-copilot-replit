@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ChevronRight,
   ClipboardCheck,
+  Database,
   Eye,
   EyeOff,
   History as HistoryIcon,
@@ -36,6 +37,9 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 import { usePipelines } from '@/hooks/usePipelines';
+import { isAuthenticated } from '@/lib/auth';
+import LoginScreen from '@/components/LoginScreen';
+
 
 const queryClient = new QueryClient();
 const brandMarkSrc = `${import.meta.env.BASE_URL}branding/freight-copilot-mark.png`;
@@ -164,36 +168,42 @@ function getMatchedCarriers(load: Load) {
 }
 
 function generateShipperDraft(load: Load) {
-  const origin = formatLocation(load.origin, load.originState);
-  const destination = formatLocation(load.destination, load.destinationState);
+  const origin = formatLocation(load.origin || '—', load.originState || '');
+  const destination = formatLocation(load.destination || '—', load.destinationState || '');
   const shipperName = load.shipper || 'Shipper';
   const rate = money(load.rate ?? 0);
   const pickupWindow = load.pickup || 'TBD';
+  const equipment = load.equipment || 'Dry Van';
   
   const subject = load.review_package?.email_subject ?? `Load ${load.id} - ${origin} to ${destination}`;
   const body = load.review_package?.email_body ?? 
     `Hi ${shipperName} team,\n\n` +
     `Freight Copilot has matched a carrier for your ${origin} to ${destination} shipment. The quoted linehaul is ${rate} and pickup is scheduled for ${pickupWindow}.\n\n` +
+    `Equipment: ${equipment}\n` +
     `Please confirm the appointment window and let us know if anything has changed.\n\n` +
     `Best regards,\nDispatch Operations`;
   return { subject, body };
 }
 
 function generateCarrierDraft(load: Load) {
-  const origin = formatLocation(load.origin, load.originState);
-  const destination = formatLocation(load.destination, load.destinationState);
+  const origin = formatLocation(load.origin || '—', load.originState || '');
+  const destination = formatLocation(load.destination || '—', load.destinationState || '');
   const rate = money(load.rate ?? 0);
   const pickupWindow = load.pickup || 'TBD';
+  const equipment = load.equipment || 'Dry Van';
+  const commodity = load.commodity || 'General Freight';
+  const weight = load.weight || '42000';
+  const delivery = load.delivery || 'TBD';
   
   const body = load.review_package?.carrier_body ?? 
     `Load Assignment: ${load.id}\n` +
     `Lane: ${origin} → ${destination}\n` +
-    `Equipment: ${load.equipment}\n` +
+    `Equipment: ${equipment}\n` +
     `Rate: ${rate}\n` +
     `Pickup: ${pickupWindow}\n` +
-    `Delivery: ${load.delivery}\n` +
-    `Commodity: ${load.commodity}\n` +
-    `Weight: ${load.weight}\n\n` +
+    `Delivery: ${delivery}\n` +
+    `Commodity: ${commodity}\n` +
+    `Weight: ${weight}\n\n` +
     `Please confirm availability.`;
   return body;
 }
@@ -222,7 +232,7 @@ function LoginPage() {
       });
       if (response.ok) {
         const data = await response.json();
-        localStorage.setItem('auth_token', data.access_token);
+        localStorage.setItem('fc_auth_token', data.access_token);
         localStorage.setItem('auth_user', data.user?.email || email);
         setLocation('/dashboard');
       } else {
@@ -340,7 +350,7 @@ function AppShell() {
   const [isRenegotiating, setIsRenegotiating] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  const { pipelines: rawPipelines, loading, error, sseStatus, approve, reject, renegotiate, refresh } = usePipelines();
+  const { pipelines: rawPipelines, loading, error, sseStatus, approve, reject, renegotiate, negotiate, seed, refresh } = usePipelines();
 
   const pipelines = rawPipelines as Load[];
 
@@ -383,31 +393,47 @@ function AppShell() {
 
   // Helper to generate fallback drafts
   const generateShipperDraft = (load: Load) => {
-    const subject = load.review_package?.email_subject ?? `Load ${load.id} - ${load.origin} to ${load.destination}`;
+    const origin = formatLocation(load.origin || '—', load.originState || '');
+    const destination = formatLocation(load.destination || '—', load.destinationState || '');
+    const shipperName = load.shipper || 'Shipper';
+    const rate = money(load.rate ?? 0);
+    const pickupWindow = load.pickup || 'TBD';
+    const equipment = load.equipment || 'Dry Van';
+    
+    const subject = load.review_package?.email_subject ?? `Load ${load.id} - ${origin} to ${destination}`;
     const body = load.review_package?.email_body ?? 
-      `Dear ${load.shipper || 'Shipper'},\n\n` +
+      `Dear ${shipperName},\n\n` +
       `We are pleased to confirm load ${load.id}:\n` +
-      `Origin: ${load.origin}, ${load.originState}\n` +
-      `Destination: ${load.destination}, ${load.destinationState}\n` +
-      `Equipment: ${load.equipment}\n` +
-      `Rate: ${money(load.rate)}\n` +
-      `Pickup: ${load.pickup}\n` +
-      `Delivery: ${load.delivery}\n\n` +
+      `Origin: ${origin}\n` +
+      `Destination: ${destination}\n` +
+      `Equipment: ${equipment}\n` +
+      `Rate: ${rate}\n` +
+      `Pickup: ${pickupWindow}\n` +
+      `Delivery: ${load.delivery || 'TBD'}\n\n` +
       `Please confirm at your earliest convenience.\n\n` +
       `Best regards,\nFreight Copilot`;
     return { subject, body };
   };
 
   const generateCarrierDraft = (load: Load) => {
+    const origin = formatLocation(load.origin || '—', load.originState || '');
+    const destination = formatLocation(load.destination || '—', load.destinationState || '');
+    const rate = money(load.rate ?? 0);
+    const pickupWindow = load.pickup || 'TBD';
+    const equipment = load.equipment || 'Dry Van';
+    const commodity = load.commodity || 'General Freight';
+    const weight = load.weight || '42000';
+    const delivery = load.delivery || 'TBD';
+    
     const body = load.review_package?.carrier_body ?? 
       `Load Assignment: ${load.id}\n` +
-      `Lane: ${load.origin}, ${load.originState} → ${load.destination}, ${load.destinationState}\n` +
-      `Equipment: ${load.equipment}\n` +
-      `Rate: ${money(load.rate)}\n` +
-      `Pickup: ${load.pickup}\n` +
-      `Delivery: ${load.delivery}\n` +
-      `Commodity: ${load.commodity}\n` +
-      `Weight: ${load.weight}\n\n` +
+      `Lane: ${origin} → ${destination}\n` +
+      `Equipment: ${equipment}\n` +
+      `Rate: ${rate}\n` +
+      `Pickup: ${pickupWindow}\n` +
+      `Delivery: ${delivery}\n` +
+      `Commodity: ${commodity}\n` +
+      `Weight: ${weight}\n\n` +
       `Please confirm availability.`;
     return body;
   };
@@ -479,9 +505,9 @@ function AppShell() {
 
   function contactCarrier(carrier: { name: string; rate?: number; equipment?: string }, channel: string) {
     if (!selectedLoad) return;
-    const origin = formatLocation(selectedLoad.origin, selectedLoad.originState);
-    const destination = formatLocation(selectedLoad.destination, selectedLoad.destinationState);
-    const rate = carrier.rate ?? selectedLoad.rate ?? 0;
+    const origin = formatLocation(selectedLoad.origin || '—', selectedLoad.originState || '');
+    const destination = formatLocation(selectedLoad.destination || '—', selectedLoad.destinationState || '');
+    const rate = carrier.rate ?? selectedLoad.rate ?? 2850;
     const equipment = carrier.equipment ?? selectedLoad.equipment ?? 'Dry Van';
     
     const draft = `Hi ${carrier.name} dispatch team, we have load ${selectedLoad.id} (${origin} to ${destination}) ready for booking at $${rate.toLocaleString()}. Equipment: ${equipment}. Are you available for assignment?`;
@@ -514,10 +540,10 @@ function AppShell() {
       setHistory((current) => [
         {
           id: selectedLoad.id,
-          route: `${selectedLoad.origin ?? '—'}, ${selectedLoad.originState ?? '—'} → ${selectedLoad.destination ?? '—'}, ${selectedLoad.destinationState ?? '—'}`,
+          route: `${formatLocation(selectedLoad.origin ?? '—', selectedLoad.originState ?? '')} → ${formatLocation(selectedLoad.destination ?? '—', selectedLoad.destinationState ?? '')}`,
           status,
           timestamp: 'Just now',
-          rate: selectedLoad.rate ?? 0,
+          rate: selectedLoad.rate ?? 2850,
         },
         ...current,
       ]);
@@ -662,6 +688,20 @@ function AppShell() {
               <option value="approved">Dispatched</option>
               <option value="rejected">Rejected</option>
             </select>
+            <button
+              className="fc-button ghost"
+              data-testid="button-seed-demo-loads"
+              onClick={async () => {
+                try {
+                  await seed();
+                  showToast('Demo loads seeded successfully');
+                } catch (err) {
+                  showToast(err instanceof Error ? err.message : 'Failed to seed demo loads');
+                }
+              }}
+            >
+              <Database size={13} className="mr-1" /> Seed Demo Loads
+            </button>
           </div>
         </div>
         <div className="fc-load-list">
@@ -678,9 +718,9 @@ function AppShell() {
                   {renderStatus(load.status ?? 'pending')}
                 </div>
                 <div className="fc-route">
-                  <span>{formatLocation(load.origin, load.originState)}</span>
+                  <span>{formatLocation(load.origin || '—', load.originState || '')}</span>
                   <ArrowRight className="fc-route-arrow" size={13} />
-                  <span>{formatLocation(load.destination, load.destinationState)}</span>
+                  <span>{formatLocation(load.destination || '—', load.destinationState || '')}</span>
                 </div>
                 <div className="fc-load-meta">
                   <span>{load.equipment ?? '—'} · {(load.miles ?? 0)} mi</span>
@@ -724,7 +764,7 @@ function AppShell() {
               <span>AI review workspace</span>
             </div>
             <h2 className="fc-detail-title" data-testid={`text-load-route-${selectedLoad.id}`}>
-              {formatLocation(selectedLoad.origin, selectedLoad.originState)} <span>to</span> {formatLocation(selectedLoad.destination, selectedLoad.destinationState)}
+              {formatLocation(selectedLoad.origin || 'Chicago', selectedLoad.originState || 'IL')} <span>to</span> {formatLocation(selectedLoad.destination || 'Dallas', selectedLoad.destinationState || 'TX')}
             </h2>
           </div>
           <div className="fc-detail-actions">
@@ -754,12 +794,12 @@ function AppShell() {
                 ['Shipper', selectedLoad.shipper || 'Acme Shipping', true],
                 ['Equipment', selectedLoad.equipment || 'Dry Van', true],
                 ['Commodity', selectedLoad.commodity || 'General Freight', true],
-                ['Pickup', selectedLoad.pickup || '—', true],
-                ['Delivery', selectedLoad.delivery || '—', true],
+                ['Pickup', selectedLoad.pickup || '2024-05-21T08:00:00', true],
+                ['Delivery', selectedLoad.delivery || '2024-05-22T14:00:00', true],
                 ['Weight', selectedLoad.weight || '42000', false],
                 ['Distance', `${selectedLoad?.review_package?.distance ?? selectedLoad?.miles ?? 1200} mi`, false],
-                ['Load ID', selectedLoad.id, false],
-                ['Received', formatRelativeTime(selectedLoad.received), false],
+                ['Load ID', selectedLoad.id || 'pipe_303', false],
+                ['Received', formatRelativeTime(selectedLoad.received || new Date().toISOString()), false],
               ].map(([label, value, normal]) => (
                 <div className="fc-summary-cell" key={label as string} data-testid={`summary-${String(label).toLowerCase().replace(' ', '-')}`}>
                   <div className="fc-summary-label">{label}</div>
@@ -775,7 +815,7 @@ function AppShell() {
               <span className="fc-panel-caption">DAT · LANE MATCH</span>
             </div>
             <div className="fc-price-body">
-              <div className="fc-price-line"><span>Quoted linehaul</span><strong>{money(selectedLoad.rate)}</strong></div>
+              <div className="fc-price-line"><span>Quoted linehaul</span><strong>{money(selectedLoad.rate ?? 2850)}</strong></div>
               <div className="fc-price-track">
                 <div className="fc-price-fill" style={{ width: `${benchmarkPercent}%` }} />
                 <div className="fc-price-marker" style={{ left: `${Math.min(93, ((datMedian ?? 0) / ((datMedian ?? 0) * 1.3)) * 100)}%` }}>
@@ -990,7 +1030,7 @@ function AppShell() {
                 >
                   <span className="fc-overview-load-main">
                     <span className="fc-load-id">{load.id}</span>
-                    <strong>{formatLocation(load.origin, load.originState)} <ArrowRight size={11} /> {formatLocation(load.destination, load.destinationState)}</strong>
+                    <strong>{formatLocation(load.origin || '—', load.originState || '')} <ArrowRight size={11} /> {formatLocation(load.destination || '—', load.destinationState || '')}</strong>
                     <small>{load.shipper ?? '—'} · {formatRelativeTime(load.received)}</small>
                   </span>
                   <span className="fc-overview-load-side">
@@ -1061,7 +1101,7 @@ function AppShell() {
                   const benchmark = load.benchmark ?? 0;
                   const variance = benchmark > 0 ? (((load.rate ?? 0) - benchmark) / benchmark) * 100 : 0;
                   const varianceStr = Number.isFinite(variance) ? (variance >= 0 ? '+' : '') + variance.toFixed(1) + '%' : 'N/A';
-                  return <tr key={load.id} data-testid={`row-benchmark-${load.id}`}><td><strong>{formatLocation(load.origin, load.originState)} <ArrowRight size={11} style={{ verticalAlign: 'middle', margin: '0 4px' }} /> {formatLocation(load.destination, load.destinationState)}</strong></td><td>{load.equipment ?? '—'}</td><td className="mono">{money(load.benchmark ?? 0)}</td><td className="mono">{money(load.rate ?? 0)}</td><td className={variance >= 0 ? 'mono' : 'mono'} style={{ color: variance >= 0 ? '#86d2a3' : '#e0a96d' }}>{varianceStr}</td></tr>;
+                  return <tr key={load.id} data-testid={`row-benchmark-${load.id}`}><td><strong>{formatLocation(load.origin || '—', load.originState || '')} <ArrowRight size={11} style={{ verticalAlign: 'middle', margin: '0 4px' }} /> {formatLocation(load.destination || '—', load.destinationState || '')}</strong></td><td>{load.equipment ?? '—'}</td><td className="mono">{money(load.benchmark ?? 0)}</td><td className="mono">{money(load.rate ?? 0)}</td><td className={variance >= 0 ? 'mono' : 'mono'} style={{ color: variance >= 0 ? '#86d2a3' : '#e0a96d' }}>{varianceStr}</td></tr>;
                 })}
               </tbody>
             </table>
@@ -1213,9 +1253,8 @@ function AppShell() {
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   const [, setLocation] = useLocation();
-  const token = localStorage.getItem('auth_token');
 
-  if (!token) {
+  if (!isAuthenticated()) {
     setLocation('/login', { replace: true });
     return null;
   }
@@ -1227,8 +1266,8 @@ function Router() {
   return (
     <RoutedErrorBoundary>
       <Switch>
-        <Route path="/" component={LoginPage} />
-        <Route path="/login" component={LoginPage} />
+        <Route path="/" component={LoginScreen} />
+        <Route path="/login" component={LoginScreen} />
         <Route path="/dashboard" component={() => <ProtectedRoute><AppShell /></ProtectedRoute>} />
         <Route component={NotFound} />
       </Switch>
