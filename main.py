@@ -77,8 +77,34 @@ def safe_dict(val):
 app = FastAPI(title="Freight Copilot API")
 
 # Auth configuration
-DASHBOARD_USER = os.getenv("DASHBOARD_USER", "admin")
-DASHBOARD_PASS = os.getenv("DASHBOARD_PASS", "admin123")
+def _env_value(*names: str, default: str = "") -> str:
+    """Return the first non-empty environment variable from names."""
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and value.strip():
+            return value.strip()
+    return default
+
+
+def _login_credentials() -> List[tuple[str, str]]:
+    """Return accepted (username, password) pairs from environment variables."""
+    dashboard_user = _env_value("DASHBOARD_USER", "AUTH_USERNAME", default="admin").lower()
+    dashboard_pass = _env_value("DASHBOARD_PASS", "AUTH_PASSWORD", default="admin123")
+    auth_user = _env_value("AUTH_USERNAME", "DASHBOARD_USER", default="admin").lower()
+    auth_pass = _env_value("AUTH_PASSWORD", "DASHBOARD_PASS", default="admin123")
+    return [(dashboard_user, dashboard_pass), (auth_user, auth_pass)]
+
+
+LOGIN_USER_ALIASES = {"admin", "anuforofranklin19@gmail.com"}
+
+
+def _credentials_match(username: str, password: str) -> bool:
+    for expected_user, expected_pass in _login_credentials():
+        if username in LOGIN_USER_ALIASES | {expected_user} and password == expected_pass:
+            return True
+    return False
+
+
 security = HTTPBearer(auto_error=False)
 
 
@@ -100,17 +126,15 @@ async def verify_auth(credentials: HTTPAuthorizationCredentials = Depends(securi
 
 @app.post("/api/login")
 async def login(req: LoginRequest):
-    user_input = (req.username or req.email or "").strip().lower()
-    valid_users = ["admin", "anuforofranklin19@gmail.com", os.getenv("DASHBOARD_USER", "admin").lower()]
-    valid_pass = os.getenv("DASHBOARD_PASS", "copilot2026!")
+    user_input = ((req.username or "").strip() or (req.email or "").strip()).lower()
 
-    if user_input in valid_users and req.password == valid_pass:
+    if user_input and _credentials_match(user_input, req.password):
         return {
             "access_token": "copilot_session_token_2026",
             "token_type": "bearer",
             "user": {"email": user_input, "role": "admin"}
         }
-    
+
     raise HTTPException(status_code=401, detail="Invalid username or password")
 
 
@@ -126,15 +150,16 @@ app.add_middleware(
 @app.post("/auth/login")
 async def auth_login(request: Request):
     body = await request.json()
-    expected_user = os.environ.get("AUTH_USERNAME", "admin")
-    expected_pass = os.environ.get("AUTH_PASSWORD", "admin123")
-    if body.get("username") != expected_user or body.get("password") != expected_pass:
+    user_input = ((body.get("username") or "").strip() or (body.get("email") or "").strip()).lower()
+    password = body.get("password") or ""
+
+    if not user_input or not _credentials_match(user_input, password):
         raise HTTPException(
             status_code=401,
             detail="Invalid username or password"
         )
     return {
-        "token": create_token(expected_user),
+        "token": create_token(user_input),
         "expires_in": JWT_EXPIRY_HOURS * 3600
     }
 
