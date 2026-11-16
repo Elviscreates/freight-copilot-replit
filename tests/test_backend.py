@@ -42,6 +42,32 @@ async def test_cors_preflight_rejects_unknown_origin():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/login", "/auth/login"])
+async def test_login_routes_allow_vercel_cors(path):
+    """Vercel browser clients need CORS for preflight and login requests."""
+    origin = "https://freight-copilot-git-master-user.vercel.app"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        preflight = await client.options(
+            path,
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        assert preflight.status_code == 200
+        assert preflight.headers.get("access-control-allow-origin") == origin
+        assert "POST" in preflight.headers.get("access-control-allow-methods", "")
+
+        response = await client.post(
+            path,
+            headers={"Origin": origin},
+            json={"username": "admin", "password": "admin123"},
+        )
+        assert response.headers.get("access-control-allow-origin") == origin
+
+
+@pytest.mark.asyncio
 async def test_list_pipelines_empty():
     """Test that list pipelines returns empty list when store is empty."""
     from services.pipeline_store import store
