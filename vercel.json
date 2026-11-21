@@ -1,0 +1,18 @@
+{
+  "buildCommand": "pnpm --dir artifacts/freight-copilot run build",
+  "outputDirectory": "artifacts/freight-copilot/dist/public",
+  "rewrites": [
+    {
+      "source": "/dashboard",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/dashboard/:path*",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/login",
+      "destination": "/index.html"
+    }
+  ]
+}
