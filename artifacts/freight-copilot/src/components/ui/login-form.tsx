@@ -190,7 +190,13 @@ export function LoginForm({ onSubmit, loading = false, error = "" }: LoginFormPr
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    void onSubmit(username, password);
+    const formData = new FormData(event.currentTarget);
+    const submittedUsername = String(formData.get("username") ?? "").trim();
+    const submittedPassword = String(formData.get("password") ?? "");
+
+    setUsername(submittedUsername);
+    setPassword(submittedPassword);
+    void onSubmit(submittedUsername, submittedPassword);
   };
 
   return (
@@ -204,6 +210,7 @@ export function LoginForm({ onSubmit, loading = false, error = "" }: LoginFormPr
           <input
             type="text"
             id="floating_username"
+            name="username"
             className="peer block w-full appearance-none border-0 border-b-2 border-gray-300 bg-transparent px-0 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-0"
             placeholder=" "
             value={username}
@@ -225,6 +232,7 @@ export function LoginForm({ onSubmit, loading = false, error = "" }: LoginFormPr
           <input
             type="password"
             id="floating_password"
+            name="password"
             className="peer block w-full appearance-none border-0 border-b-2 border-gray-300 bg-transparent px-0 py-2.5 text-sm text-white focus:border-blue-500 focus:outline-none focus:ring-0"
             placeholder=" "
             value={password}

@@ -14,8 +14,8 @@ export default function LoginScreen() {
     try {
       await login(username, password);
       setLocation("/dashboard", { replace: true });
-    } catch {
-      setError("Invalid username or password. Please try again.");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Unable to sign in. Please try again.");
     } finally {
       setLoading(false);
     }
