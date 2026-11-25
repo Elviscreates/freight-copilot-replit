@@ -60,4 +60,12 @@ describe("login API", () => {
 
     await expect(login("admin", "wrong")).rejects.toThrow("Invalid username or password");
   });
+
+  it("explains fetch failures as a connection or CORS problem", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+
+    await expect(login("admin", "admin123")).rejects.toThrow(
+      "Unable to reach the login service. Check the backend connection and CORS configuration.",
+    );
+  });
 });

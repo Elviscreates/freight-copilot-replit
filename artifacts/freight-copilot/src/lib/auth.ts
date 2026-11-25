@@ -21,11 +21,18 @@ export async function login(
     throw new Error("Login API is not configured. Set VITE_API_URL to the production backend origin.");
   }
   const base = configuredBase?.replace(/\/+$/, "") ?? "";
-  const res = await fetch(`${base}/api/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: username.trim(), password }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: username.trim(), password }),
+    });
+  } catch {
+    throw new Error(
+      "Unable to reach the login service. Check the backend connection and CORS configuration.",
+    );
+  }
 
   if (!res.ok) {
     const errorData = (await res.json().catch(() => null)) as

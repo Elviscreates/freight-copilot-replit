@@ -76,6 +76,19 @@ def safe_dict(val):
 
 app = FastAPI(title="Freight Copilot API")
 
+CORS_ORIGINS = [
+    "https://freight-copilot-replit.vercel.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+CORS_ORIGINS.extend(
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "").split(",")
+    if origin.strip()
+)
+
 # Auth configuration
 def _env_value(*names: str, default: str = "") -> str:
     """Return the first non-empty environment variable from names."""
@@ -136,28 +149,6 @@ async def login(req: LoginRequest):
         }
 
     raise HTTPException(status_code=401, detail="Invalid username or password")
-
-
-default_cors_origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
-configured_cors_origins = [
-    origin.strip()
-    for origin in os.getenv("CORS_ORIGINS", "").split(",")
-    if origin.strip()
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=list(dict.fromkeys(default_cors_origins + configured_cors_origins)),
-    allow_origin_regex=r"https://([a-z0-9-]+\.)*vercel\.app",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 @app.post("/auth/login")
@@ -788,6 +779,17 @@ async def seed_demo_loads() -> Dict[str, Any]:
 @app.get("/health")
 async def health_check() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+# Wrap the complete FastAPI app so CORS headers are included on error responses too.
+app = CORSMiddleware(
+    app=app,
+    allow_origins=list(dict.fromkeys(CORS_ORIGINS)),
+    allow_origin_regex=r"https://([a-z0-9-]+\.)*vercel\.app",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 if __name__ == "__main__":

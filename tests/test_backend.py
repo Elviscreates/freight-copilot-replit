@@ -45,7 +45,7 @@ async def test_cors_preflight_rejects_unknown_origin():
 @pytest.mark.parametrize("path", ["/api/login", "/auth/login"])
 async def test_login_routes_allow_vercel_cors(path):
     """Vercel browser clients need CORS for preflight and login requests."""
-    origin = "https://freight-copilot-git-master-user.vercel.app"
+    origin = "https://freight-copilot-replit.vercel.app"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         preflight = await client.options(
             path,
@@ -57,7 +57,9 @@ async def test_login_routes_allow_vercel_cors(path):
         )
         assert preflight.status_code == 200
         assert preflight.headers.get("access-control-allow-origin") == origin
+        assert preflight.headers.get("access-control-allow-credentials") == "true"
         assert "POST" in preflight.headers.get("access-control-allow-methods", "")
+        assert "content-type" in preflight.headers.get("access-control-allow-headers", "").lower()
 
         response = await client.post(
             path,
@@ -65,6 +67,33 @@ async def test_login_routes_allow_vercel_cors(path):
             json={"username": "admin", "password": "admin123"},
         )
         assert response.headers.get("access-control-allow-origin") == origin
+
+
+@pytest.mark.asyncio
+async def test_vercel_cors_headers_are_present_on_error_responses():
+    origin = "https://freight-copilot-replit.vercel.app"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        unauthorized = await client.post(
+            "/api/login",
+            headers={"Origin": origin},
+            json={"username": "admin", "password": "incorrect"},
+        )
+        assert unauthorized.status_code == 401
+        assert unauthorized.headers.get("access-control-allow-origin") == origin
+
+        not_found = await client.get("/not-a-route", headers={"Origin": origin})
+        assert not_found.status_code == 404
+        assert not_found.headers.get("access-control-allow-origin") == origin
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        server_error = await client.post(
+            "/auth/login",
+            headers={"Origin": origin, "Content-Type": "application/json"},
+            content="{invalid json",
+        )
+        assert server_error.status_code == 500
+        assert server_error.headers.get("access-control-allow-origin") == origin
 
 
 @pytest.mark.asyncio
